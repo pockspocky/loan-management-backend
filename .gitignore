@@ -1,0 +1,134 @@
+# 依赖目录
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 环境变量文件
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 日志文件
+logs/
+*.log
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# 临时文件
+.tmp/
+.cache/
+
+# 上传文件目录
+uploads/
+!uploads/.gitkeep
+
+# 构建输出目录
+dist/
+build/
+
+# 覆盖率报告
+coverage/
+.nyc_output/
+
+# 运行时数据
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# PM2 配置文件
+ecosystem.config.js
+
+# 测试文件
+test.txt
+
+# 数据库文件
+*.db
+*.sqlite
+
+# 系统文件
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# 备份文件
+*.bak
+*.backup
+
+# 临时文件
+*.tmp
+*.temp
+
+# 依赖
+.npm
+.eslintcache
+
+# 可选的npm缓存目录
+.npm
+
+# 可选的REPL历史
+.node_repl_history
+
+# 输出的二进制文件
+*.tgz
+
+# Yarn完整性文件
+.yarn-integrity
+
+# parcel-bundler缓存
+.cache
+.parcel-cache
+
+# next.js构建输出
+.next
+
+# nuxt.js构建输出
+.nuxt
+
+# vuepress构建输出
+.vuepress/dist
+
+# Serverless目录
+.serverless
+
+# FuseBox缓存
+.fusebox/
+
+# DynamoDB本地文件
+.dynamodb/
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS生成的文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 测试文件
+test-results/
+playwright-report/
+test-results.xml
+
+# 构建文件
+dist/
+build/
+
+# 临时文件
+tmp/
+temp/ 
