@@ -2,7 +2,7 @@
 
 # 贷款管理系统API测试脚本
 
-BASE_URL="http://localhost:3000/api/v1"
+BASE_URL="http://localhost:8080/api/v1"
 
 echo "🚀 开始测试贷款管理系统API..."
 

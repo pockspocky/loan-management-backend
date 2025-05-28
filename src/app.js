@@ -39,11 +39,61 @@ app.use(helmet({
 
 // CORS配置
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ['http://localhost:3000'],
+  origin: function (origin, callback) {
+    // 允许的源
+    const allowedOrigins = process.env.ALLOWED_ORIGINS ? 
+      process.env.ALLOWED_ORIGINS.split(',') : 
+      ['http://localhost:8080', 'http://localhost:5173', 'http://localhost:3002'];
+    
+    // 允许没有origin的请求（如移动应用、Postman等）
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('不被CORS策略允许的源'), false);
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Cache-Control',
+    'X-File-Name'
+  ],
+  preflightContinue: false,
+  optionsSuccessStatus: 200
 }));
+
+// 添加额外的CORS头处理
+app.use((req, res, next) => {
+  // 获取允许的源
+  const allowedOrigins = process.env.ALLOWED_ORIGINS ? 
+    process.env.ALLOWED_ORIGINS.split(',') : 
+    ['http://localhost:8080', 'http://localhost:5173', 'http://localhost:3002'];
+  
+  const origin = req.headers.origin;
+  
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept,Origin,Cache-Control,X-File-Name');
+  res.setHeader('Access-Control-Max-Age', '86400'); // 24小时
+  
+  // 处理预检请求
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
 
 // 压缩响应
 app.use(compression());
@@ -165,11 +215,13 @@ process.on('unhandledRejection', (reason, promise) => {
   process.exit(1);
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
+const HOST = process.env.HOST || '0.0.0.0';
 
-const server = app.listen(PORT, () => {
-  logger.info(`🚀 服务器运行在端口 ${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  logger.info(`🚀 服务器运行在 ${HOST}:${PORT}`);
   logger.info(`📚 API文档地址: http://localhost:${PORT}/api/${apiVersion}`);
+  logger.info(`🌐 外部访问地址: http://0.0.0.0:${PORT}/api/${apiVersion}`);
   logger.info(`环境: ${process.env.NODE_ENV}`);
   logger.info(`数据库: ${process.env.MONGODB_URI}`);
 });

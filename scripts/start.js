@@ -48,7 +48,7 @@ directories.forEach(dir => {
 console.log('🚀 启动贷款管理系统后端服务...');
 console.log(`📊 环境: ${process.env.NODE_ENV || 'development'}`);
 console.log(`🔗 数据库: ${process.env.MONGODB_URI}`);
-console.log(`🌐 端口: ${process.env.PORT || 3000}`);
+console.log(`🌐 端口: ${process.env.PORT || 8080}`);
 console.log('');
 
 // 启动应用

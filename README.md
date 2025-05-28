@@ -66,7 +66,7 @@ cp .env.example .env
 
 ```env
 # 服务器配置
-PORT=3000
+PORT=8080
 NODE_ENV=development
 
 # 数据库配置
@@ -102,7 +102,7 @@ npm run dev
 npm start
 ```
 
-服务将在 `http://localhost:3000` 启动。
+服务将在 `http://localhost:8080` 启动。
 
 ## API 文档
 
@@ -293,7 +293,7 @@ pm2 start ecosystem.config.js
 
 ```bash
 docker build -t loan-management-backend .
-docker run -p 3000:3000 loan-management-backend
+docker run -p 8080:8080 loan-management-backend
 ```
 
 ## 安全考虑

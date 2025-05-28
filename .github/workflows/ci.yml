@@ -61,7 +61,7 @@ jobs:
       run: |
         timeout 30s npm start &
         sleep 15
-        curl -f http://localhost:3000/health || echo "Health check failed but continuing"
+        curl -f http://localhost:8080/health || echo "Health check failed but continuing"
 
   security:
     runs-on: ubuntu-latest
