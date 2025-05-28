@@ -131,6 +131,9 @@ const loanCreateSchema = Joi.object({
     'string.max': '贷款名称最多100个字符',
     'any.required': '贷款名称是必填的'
   }),
+  applicant_name: Joi.string().trim().max(50).optional().messages({
+    'string.max': '申请人姓名最多50个字符'
+  }),
   amount: Joi.number().min(1000).max(100000000).required().messages({
     'number.min': '贷款金额不能少于1000元',
     'number.max': '贷款金额不能超过1亿元',
@@ -165,6 +168,9 @@ const loanCreateSchema = Joi.object({
 // 贷款更新验证模式
 const loanUpdateSchema = Joi.object({
   loan_name: Joi.string().trim().max(100).optional(),
+  applicant_name: Joi.string().trim().max(50).optional().messages({
+    'string.max': '申请人姓名最多50个字符'
+  }),
   amount: Joi.number().min(1000).max(100000000).optional(),
   interest_rate: Joi.number().min(0).max(100).optional(),
   bank: Joi.string().trim().max(100).optional(),

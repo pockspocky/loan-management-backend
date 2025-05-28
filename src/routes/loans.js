@@ -179,6 +179,7 @@ router.post('/', authenticate, validate(loanCreateSchema), async (req, res, next
   try {
     const {
       loan_name,
+      applicant_name,
       amount,
       interest_rate,
       bank,
@@ -189,11 +190,11 @@ router.post('/', authenticate, validate(loanCreateSchema), async (req, res, next
       attachments
     } = req.body;
     
-    // 创建贷款申请
+    // 创建贷款申请 - 使用前端发送的申请人姓名，如果没有则使用当前用户姓名
     const loan = new Loan({
       loan_name,
       applicant_id: req.user._id,
-      applicant_name: req.user.real_name || req.user.username,
+      applicant_name: applicant_name || req.user.real_name || req.user.username,
       amount,
       interest_rate,
       bank,
@@ -222,7 +223,8 @@ router.post('/', authenticate, validate(loanCreateSchema), async (req, res, next
       metadata: {
         loan_id: loan._id,
         loan_name: loan.loan_name,
-        amount: loan.amount
+        amount: loan.amount,
+        applicant_name: loan.applicant_name
       }
     });
     
@@ -262,7 +264,7 @@ router.put('/:loan_id', authenticate, validate(loanUpdateSchema), async (req, re
     // 更新贷款信息
     const updateData = {};
     const allowedFields = [
-      'loan_name', 'amount', 'interest_rate', 'bank', 
+      'loan_name', 'applicant_name', 'amount', 'interest_rate', 'bank', 
       'term', 'repayment_method', 'purpose', 'collateral', 'attachments'
     ];
     
