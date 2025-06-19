@@ -136,6 +136,42 @@ const loanSchema = new mongoose.Schema({
   total_interest: {
     type: Number,
     default: null
+  },
+  repayment_status: {
+    type: String,
+    enum: {
+      values: ['not_started', 'in_progress', 'completed', 'overdue'],
+      message: '还款状态必须是not_started、in_progress、completed或overdue'
+    },
+    default: 'not_started',
+    index: true
+  },
+  total_paid_amount: {
+    type: Number,
+    default: 0,
+    min: [0, '总已还金额不能为负数']
+  },
+  repayment_start_date: {
+    type: Date,
+    default: null
+  },
+  next_payment_date: {
+    type: Date,
+    default: null
+  },
+  last_payment_date: {
+    type: Date,
+    default: null
+  },
+  paid_periods: {
+    type: Number,
+    default: 0,
+    min: [0, '已还期数不能为负数']
+  },
+  overdue_periods: {
+    type: Number,
+    default: 0,
+    min: [0, '逾期期数不能为负数']
   }
 }, {
   timestamps: {
@@ -163,6 +199,18 @@ loanSchema.virtual('loan_number').get(function() {
   const date = this.application_date || this.created_at;
   const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
   return `LOAN${dateStr}${this._id.toString().slice(-6).toUpperCase()}`;
+});
+
+// 虚拟字段：还款进度百分比
+loanSchema.virtual('payment_progress').get(function() {
+  if (!this.total_payment || this.total_payment === 0) return 0;
+  return Math.round((this.total_paid_amount / this.total_payment) * 100);
+});
+
+// 虚拟字段：剩余还款金额
+loanSchema.virtual('remaining_amount').get(function() {
+  if (!this.total_payment) return 0;
+  return Math.max(0, this.total_payment - this.total_paid_amount);
 });
 
 // 计算月供的方法
@@ -200,6 +248,92 @@ loanSchema.methods.calculateTotalPayment = function() {
     const totalInterest = principal * rate * (term + 1) / 2;
     return Math.round((principal + totalInterest) * 100) / 100;
   }
+};
+
+// 实例方法：生成还款计划
+loanSchema.methods.generateRepaymentSchedule = async function() {
+  const { 
+    calculateEqualInstallment, 
+    calculateEqualPrincipal 
+  } = require('../utils/loanCalculator');
+  
+  const RepaymentSchedule = require('./RepaymentSchedule');
+  
+  const principal = this.approved_amount || this.amount;
+  const annualRate = (this.approved_rate || this.interest_rate) / 100;
+  const months = this.term;
+  
+  let calculationResult;
+  
+  if (this.repayment_method === 'equal_payment') {
+    calculationResult = calculateEqualInstallment(principal, annualRate, months);
+  } else {
+    calculationResult = calculateEqualPrincipal(principal, annualRate, months);
+  }
+  
+  // 设置还款开始日期（审批日期后一个月）
+  const startDate = this.repayment_start_date || new Date();
+  if (!this.repayment_start_date) {
+    startDate.setMonth(startDate.getMonth() + 1);
+    this.repayment_start_date = startDate;
+  }
+  
+  // 设置下次还款日期
+  const nextPaymentDate = new Date(startDate);
+  nextPaymentDate.setMonth(nextPaymentDate.getMonth() + 1);
+  this.next_payment_date = nextPaymentDate;
+  
+  // 生成还款计划
+  await RepaymentSchedule.generateSchedule(this._id, calculationResult, startDate);
+  
+  return calculationResult;
+};
+
+// 实例方法：更新还款状态
+loanSchema.methods.updatePaymentStatus = async function() {
+  const RepaymentSchedule = require('./RepaymentSchedule');
+  
+  const stats = await RepaymentSchedule.getLoanPaymentStats(this._id);
+  
+  this.total_paid_amount = stats.paid_amount;
+  this.paid_periods = stats.paid_periods;
+  this.overdue_periods = stats.overdue_periods;
+  
+  // 更新还款状态
+  if (stats.paid_periods === 0) {
+    this.repayment_status = 'not_started';
+  } else if (stats.paid_periods === stats.total_periods) {
+    this.repayment_status = 'completed';
+  } else if (stats.overdue_periods > 0) {
+    this.repayment_status = 'overdue';
+  } else {
+    this.repayment_status = 'in_progress';
+  }
+  
+  // 更新下次还款日期
+  if (this.repayment_status !== 'completed') {
+    const nextPayment = await RepaymentSchedule.findOne({
+      loan_id: this._id,
+      status: { $in: ['pending', 'overdue', 'partial'] }
+    }).sort({ period_number: 1 });
+    
+    if (nextPayment) {
+      this.next_payment_date = nextPayment.due_date;
+    }
+  }
+  
+  // 更新最后还款日期
+  const lastPayment = await RepaymentSchedule.findOne({
+    loan_id: this._id,
+    status: 'paid'
+  }).sort({ period_number: -1 });
+  
+  if (lastPayment) {
+    this.last_payment_date = lastPayment.paid_date;
+  }
+  
+  await this.save();
+  return stats;
 };
 
 // 保存前计算相关字段

@@ -11,7 +11,15 @@ const {
   loanQuerySchema 
 } = require('../utils/validation');
 const { buildPaginationResponse, buildSortObject, buildDateRangeQuery } = require('../utils/helpers');
+const { 
+  calculateEqualInstallment, 
+  calculateEqualPrincipal, 
+  compareRepaymentMethods,
+  calculatePrepayment 
+} = require('../utils/loanCalculator');
+const RepaymentSchedule = require('../models/RepaymentSchedule');
 const AppError = require('../utils/AppError');
+const mongoose = require('mongoose');
 
 const router = express.Router();
 
@@ -336,6 +344,14 @@ router.patch('/:loan_id/approve', authenticate, authorize('admin'), validate(loa
     if (status === 'approved') {
       loan.approved_amount = approved_amount || loan.amount;
       loan.approved_rate = approved_rate || loan.interest_rate;
+      
+      // 生成还款计划
+      try {
+        await loan.generateRepaymentSchedule();
+      } catch (scheduleError) {
+        console.error('生成还款计划失败:', scheduleError);
+        // 可以选择回滚贷款状态或者记录错误
+      }
     }
     
     await loan.save();
@@ -437,6 +453,821 @@ router.get('/statistics', authenticate, authorize('admin'), async (req, res, nex
       success: true,
       message: '获取贷款统计成功',
       data: stats,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 等额本息还款计算
+router.post('/calculate/equal-installment', authenticate, async (req, res, next) => {
+  try {
+    const { principal, annual_rate, months } = req.body;
+    
+    // 参数验证
+    if (!principal || !annual_rate || !months) {
+      return next(new AppError('请提供完整的计算参数', 400, 4000));
+    }
+    
+    if (principal <= 0 || annual_rate < 0 || months <= 0) {
+      return next(new AppError('参数错误：本金必须大于0，利率不能为负数，期数必须大于0', 400, 4000));
+    }
+    
+    const result = calculateEqualInstallment(principal, annual_rate, months);
+    
+    // 记录计算日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'loan',
+      action: 'calculate_equal_installment',
+      message: `计算等额本息还款`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        principal,
+        annual_rate,
+        months,
+        monthly_payment: result.monthlyPayment,
+        total_payment: result.totalPayment,
+        total_interest: result.totalInterest
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '等额本息还款计算成功',
+      data: result,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 等额本金还款计算
+router.post('/calculate/equal-principal', authenticate, async (req, res, next) => {
+  try {
+    const { principal, annual_rate, months } = req.body;
+    
+    // 参数验证
+    if (!principal || !annual_rate || !months) {
+      return next(new AppError('请提供完整的计算参数', 400, 4000));
+    }
+    
+    if (principal <= 0 || annual_rate < 0 || months <= 0) {
+      return next(new AppError('参数错误：本金必须大于0，利率不能为负数，期数必须大于0', 400, 4000));
+    }
+    
+    const result = calculateEqualPrincipal(principal, annual_rate, months);
+    
+    // 记录计算日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'loan',
+      action: 'calculate_equal_principal',
+      message: `计算等额本金还款`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        principal,
+        annual_rate,
+        months,
+        monthly_principal: result.monthlyPrincipal,
+        first_month_payment: result.firstMonthPayment,
+        last_month_payment: result.lastMonthPayment,
+        total_payment: result.totalPayment,
+        total_interest: result.totalInterest
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '等额本金还款计算成功',
+      data: result,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 比较两种还款方式
+router.post('/calculate/compare', authenticate, async (req, res, next) => {
+  try {
+    const { principal, annual_rate, months } = req.body;
+    
+    // 参数验证
+    if (!principal || !annual_rate || !months) {
+      return next(new AppError('请提供完整的计算参数', 400, 4000));
+    }
+    
+    if (principal <= 0 || annual_rate < 0 || months <= 0) {
+      return next(new AppError('参数错误：本金必须大于0，利率不能为负数，期数必须大于0', 400, 4000));
+    }
+    
+    const result = compareRepaymentMethods(principal, annual_rate, months);
+    
+    // 记录计算日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'loan',
+      action: 'compare_repayment_methods',
+      message: `比较两种还款方式`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        principal,
+        annual_rate,
+        months,
+        interest_difference: result.comparison.interestDifference,
+        payment_difference: result.comparison.paymentDifference
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '还款方式比较成功',
+      data: result,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 提前还款计算
+router.post('/calculate/prepayment', authenticate, async (req, res, next) => {
+  try {
+    const { 
+      principal, 
+      annual_rate, 
+      original_months, 
+      paid_months, 
+      prepayment_amount, 
+      repayment_type = 'equalInstallment' 
+    } = req.body;
+    
+    // 参数验证
+    if (!principal || !annual_rate || !original_months || !paid_months || !prepayment_amount) {
+      return next(new AppError('请提供完整的计算参数', 400, 4000));
+    }
+    
+    if (principal <= 0 || annual_rate < 0 || original_months <= 0 || paid_months < 0 || prepayment_amount <= 0) {
+      return next(new AppError('参数错误：请检查所有参数的有效性', 400, 4000));
+    }
+    
+    if (paid_months >= original_months) {
+      return next(new AppError('已还期数不能大于等于总期数', 400, 4000));
+    }
+    
+    const result = calculatePrepayment(
+      principal, 
+      annual_rate, 
+      original_months, 
+      paid_months, 
+      prepayment_amount, 
+      repayment_type
+    );
+    
+    // 记录计算日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'loan',
+      action: 'calculate_prepayment',
+      message: `计算提前还款`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        principal,
+        annual_rate,
+        original_months,
+        paid_months,
+        prepayment_amount,
+        repayment_type,
+        saved_interest: result.savedInterest,
+        type: result.type
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '提前还款计算成功',
+      data: result,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 获取贷款还款计划
+router.get('/:loan_id/repayment-schedule', authenticate, async (req, res, next) => {
+  try {
+    const { loan_id } = req.params;
+    const { page = 1, per_page = 50, status } = req.query;
+    
+    const loan = await Loan.findById(loan_id);
+    if (!loan) {
+      return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    // 权限检查
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return next(new AppError('只能查看自己的贷款还款计划', 403, 1003));
+    }
+    
+    // 构建查询条件
+    const filter = { loan_id };
+    if (status) {
+      filter.status = status;
+    }
+    
+    const skip = (page - 1) * per_page;
+    
+    // 查询还款计划
+    const schedule = await RepaymentSchedule.find(filter)
+      .sort({ period_number: 1 })
+      .skip(skip)
+      .limit(per_page);
+    
+    const total = await RepaymentSchedule.countDocuments(filter);
+    
+    // 获取还款统计
+    const stats = await RepaymentSchedule.getLoanPaymentStats(loan_id);
+    
+    const responseData = buildPaginationResponse(schedule, page, per_page, total);
+    responseData.payment_stats = stats;
+    
+    res.json({
+      success: true,
+      message: '获取还款计划成功',
+      data: responseData,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 记录还款
+router.post('/:loan_id/repayment-schedule/:period_number/payment', authenticate, async (req, res, next) => {
+  try {
+    const { loan_id, period_number } = req.params;
+    const { 
+      paid_amount, 
+      payment_method, 
+      transaction_id, 
+      notes, 
+      paid_date 
+    } = req.body;
+    
+    const loan = await Loan.findById(loan_id);
+    if (!loan) {
+      return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    // 权限检查（只有管理员可以记录还款）
+    if (req.user.role !== 'admin') {
+      return next(new AppError('只有管理员可以记录还款', 403, 1003));
+    }
+    
+    const schedule = await RepaymentSchedule.findOne({
+      loan_id,
+      period_number: parseInt(period_number)
+    });
+    
+    if (!schedule) {
+      return next(new AppError('还款计划不存在', 404, 4040));
+    }
+    
+    if (schedule.status === 'paid') {
+      return next(new AppError('该期已经还款', 400, 4000));
+    }
+    
+    // 验证还款金额
+    if (!paid_amount || paid_amount <= 0) {
+      return next(new AppError('还款金额必须大于0', 400, 4000));
+    }
+    
+    const remainingAmount = schedule.total_amount - schedule.paid_amount;
+    if (paid_amount > remainingAmount) {
+      return next(new AppError('还款金额超过应还金额', 400, 4000));
+    }
+    
+    // 记录还款
+    const paymentData = {
+      paid_date: paid_date ? new Date(paid_date) : new Date(),
+      payment_method,
+      transaction_id,
+      notes,
+      updated_by: req.user._id
+    };
+    
+    if (paid_amount >= remainingAmount) {
+      // 全额还款
+      schedule.markAsPaid(paymentData);
+    } else {
+      // 部分还款
+      schedule.makePartialPayment(paid_amount, paymentData);
+    }
+    
+    await schedule.save();
+    
+    // 更新贷款的还款状态
+    await loan.updatePaymentStatus();
+    
+    // 记录操作日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'loan',
+      action: 'record_payment',
+      message: `记录贷款还款: ${loan.loan_name} 第${period_number}期`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        loan_id: loan._id,
+        period_number: parseInt(period_number),
+        paid_amount,
+        payment_method,
+        transaction_id
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '还款记录成功',
+      data: { 
+        schedule,
+        loan_status: {
+          repayment_status: loan.repayment_status,
+          total_paid_amount: loan.total_paid_amount,
+          paid_periods: loan.paid_periods,
+          payment_progress: loan.payment_progress
+        }
+      },
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 获取贷款还款统计
+router.get('/:loan_id/payment-stats', authenticate, async (req, res, next) => {
+  try {
+    const { loan_id } = req.params;
+    
+    const loan = await Loan.findById(loan_id);
+    if (!loan) {
+      return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    // 权限检查
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return next(new AppError('只能查看自己的贷款统计', 403, 1003));
+    }
+    
+    const stats = await RepaymentSchedule.getLoanPaymentStats(loan_id);
+    
+    // 获取逾期的还款计划
+    const overdueSchedules = await RepaymentSchedule.find({
+      loan_id,
+      status: 'overdue'
+    }).sort({ period_number: 1 });
+    
+    // 获取下期还款信息
+    const nextPayment = await RepaymentSchedule.findOne({
+      loan_id,
+      status: { $in: ['pending', 'overdue', 'partial'] }
+    }).sort({ period_number: 1 });
+    
+    const result = {
+      loan_info: {
+        loan_name: loan.loan_name,
+        total_payment: loan.total_payment,
+        repayment_status: loan.repayment_status,
+        payment_progress: loan.payment_progress,
+        remaining_amount: loan.remaining_amount
+      },
+      payment_stats: stats,
+      overdue_schedules: overdueSchedules,
+      next_payment: nextPayment
+    };
+    
+    res.json({
+      success: true,
+      message: '获取还款统计成功',
+      data: result,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 重新生成还款计划（仅管理员）
+router.post('/:loan_id/regenerate-schedule', authenticate, authorize('admin'), async (req, res, next) => {
+  try {
+    const { loan_id } = req.params;
+    const { start_date } = req.body;
+    
+    const loan = await Loan.findById(loan_id);
+    if (!loan) {
+      return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    if (loan.status !== 'approved') {
+      return next(new AppError('只有已审批的贷款才能生成还款计划', 400, 4000));
+    }
+    
+    // 检查是否已有还款记录
+    const paidSchedules = await RepaymentSchedule.findOne({
+      loan_id,
+      status: 'paid'
+    });
+    
+    if (paidSchedules) {
+      return next(new AppError('已有还款记录，无法重新生成还款计划', 400, 4000));
+    }
+    
+    // 设置新的还款开始日期
+    if (start_date) {
+      loan.repayment_start_date = new Date(start_date);
+    }
+    
+    // 重新生成还款计划
+    const calculationResult = await loan.generateRepaymentSchedule();
+    await loan.save();
+    
+    // 记录操作日志
+    await SystemLog.createLog({
+      level: 'warning',
+      module: 'loan',
+      action: 'regenerate_schedule',
+      message: `重新生成还款计划: ${loan.loan_name}`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        loan_id: loan._id,
+        start_date: loan.repayment_start_date
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '还款计划重新生成成功',
+      data: { 
+        loan,
+        calculation_result: calculationResult
+      },
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 批量修改还款计划（必须在单期修改之前）
+router.put('/:loan_id/repayment-schedule/batch', authenticate, authorize('admin'), async (req, res, next) => {
+  try {
+    const { loan_id } = req.params;
+    const { schedules } = req.body;
+    
+    if (!schedules || !Array.isArray(schedules) || schedules.length === 0) {
+      return next(new AppError('请提供要修改的还款计划数据', 400, 4000));
+    }
+    
+    const loan = await Loan.findById(loan_id);
+    if (!loan) {
+      return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    const results = [];
+    const errors = [];
+    
+    // 开启事务
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    
+    try {
+      for (const scheduleData of schedules) {
+        const { period_number, due_date, total_amount, principal_amount, interest_amount, notes, late_fee } = scheduleData;
+        
+        if (!period_number || isNaN(parseInt(period_number))) {
+          errors.push({ period_number: period_number || null, error: '期数是必填的且必须是有效数字' });
+          continue;
+        }
+        
+        const periodNum = parseInt(period_number);
+        const schedule = await RepaymentSchedule.findOne({
+          loan_id,
+          period_number: periodNum
+        }).session(session);
+        
+        if (!schedule) {
+          errors.push({ period_number: periodNum, error: '还款计划不存在' });
+          continue;
+        }
+        
+        if (schedule.status === 'paid') {
+          errors.push({ period_number: periodNum, error: '已完成还款的记录不能修改' });
+          continue;
+        }
+        
+        // 准备更新数据
+        const updateData = {
+          updated_by: req.user._id
+        };
+        
+        if (due_date !== undefined) updateData.due_date = new Date(due_date);
+        if (total_amount !== undefined) updateData.total_amount = total_amount;
+        if (principal_amount !== undefined) updateData.principal_amount = principal_amount;
+        if (interest_amount !== undefined) updateData.interest_amount = interest_amount;
+        if (late_fee !== undefined) updateData.late_fee = late_fee;
+        if (notes !== undefined) updateData.notes = notes;
+        
+        // 验证数据一致性
+        if (total_amount !== undefined || principal_amount !== undefined || interest_amount !== undefined) {
+          const newPrincipal = updateData.principal_amount ?? schedule.principal_amount;
+          const newInterest = updateData.interest_amount ?? schedule.interest_amount;
+          const newTotal = updateData.total_amount ?? schedule.total_amount;
+          
+          if (Math.abs((newPrincipal + newInterest) - newTotal) > 0.01) {
+            errors.push({ period_number: periodNum, error: '本金和利息之和必须等于总还款额' });
+            continue;
+          }
+          
+          if (schedule.paid_amount > newTotal) {
+            errors.push({ period_number: periodNum, error: '修改后的应还金额不能小于已还金额' });
+            continue;
+          }
+          
+          // 重新计算已还本金和利息的分配
+          if (schedule.paid_amount > 0) {
+            const paymentRatio = schedule.paid_amount / newTotal;
+            updateData.paid_principal = Math.min(newPrincipal, newPrincipal * paymentRatio);
+            updateData.paid_interest = Math.min(newInterest, newInterest * paymentRatio);
+          }
+        }
+        
+        // 更新还款计划
+        const updatedSchedule = await RepaymentSchedule.findOneAndUpdate(
+          { loan_id, period_number: periodNum },
+          updateData,
+          { new: true, runValidators: true, session }
+        );
+        
+        results.push(updatedSchedule);
+      }
+      
+      // 如果有错误，回滚事务
+      if (errors.length > 0 && results.length === 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: '批量修改失败',
+          data: { errors },
+          code: 4000,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // 重新计算贷款状态
+      await loan.updatePaymentStatus();
+      
+      await session.commitTransaction();
+      
+      // 记录操作日志
+      await SystemLog.createLog({
+        level: 'warning',
+        module: 'loan',
+        action: 'batch_modify_repayment_schedule',
+        message: `批量修改还款计划: ${loan.loan_name}`,
+        user_id: req.user._id,
+        username: req.user.username,
+        ip_address: req.ip || req.connection.remoteAddress,
+        user_agent: req.get('User-Agent'),
+        request_method: req.method,
+        request_url: req.originalUrl,
+        response_status: 200,
+        metadata: {
+          loan_id: loan._id,
+          modified_periods: results.map(r => r.period_number),
+          success_count: results.length,
+          error_count: errors.length
+        }
+      });
+      
+      res.json({
+        success: true,
+        message: `批量修改完成，成功${results.length}条，失败${errors.length}条`,
+        data: { 
+          modified_schedules: results,
+          errors: errors,
+          loan_status: {
+            repayment_status: loan.repayment_status,
+            total_paid_amount: loan.total_paid_amount,
+            paid_periods: loan.paid_periods,
+            payment_progress: loan.payment_progress
+          }
+        },
+        code: 200,
+        timestamp: new Date().toISOString()
+      });
+      
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
+    
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 修改还款计划
+router.put('/:loan_id/repayment-schedule/:period_number', authenticate, authorize('admin'), async (req, res, next) => {
+  try {
+    const { loan_id, period_number } = req.params;
+    const { 
+      due_date, 
+      total_amount, 
+      principal_amount, 
+      interest_amount,
+      notes,
+      late_fee
+    } = req.body;
+    
+    const loan = await Loan.findById(loan_id);
+    if (!loan) {
+      return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    const schedule = await RepaymentSchedule.findOne({
+      loan_id,
+      period_number: parseInt(period_number)
+    });
+    
+    if (!schedule) {
+      return next(new AppError('还款计划不存在', 404, 4040));
+    }
+    
+    // 不允许修改已经还款完成的记录
+    if (schedule.status === 'paid') {
+      return next(new AppError('已完成还款的记录不能修改', 400, 4000));
+    }
+    
+    // 准备更新数据
+    const updateData = {
+      updated_by: req.user._id
+    };
+    
+    // 如果修改了金额相关字段，需要重新计算
+    let needRecalculate = false;
+    
+    if (due_date !== undefined) {
+      updateData.due_date = new Date(due_date);
+    }
+    
+    if (total_amount !== undefined) {
+      updateData.total_amount = total_amount;
+      needRecalculate = true;
+    }
+    
+    if (principal_amount !== undefined) {
+      updateData.principal_amount = principal_amount;
+      needRecalculate = true;
+    }
+    
+    if (interest_amount !== undefined) {
+      updateData.interest_amount = interest_amount;
+      needRecalculate = true;
+    }
+    
+    if (late_fee !== undefined) {
+      updateData.late_fee = late_fee;
+    }
+    
+    if (notes !== undefined) {
+      updateData.notes = notes;
+    }
+    
+    // 如果修改了金额，需要验证数据一致性
+    if (needRecalculate) {
+      const newPrincipal = updateData.principal_amount ?? schedule.principal_amount;
+      const newInterest = updateData.interest_amount ?? schedule.interest_amount;
+      const newTotal = updateData.total_amount ?? schedule.total_amount;
+      
+      // 验证本金+利息=总额
+      if (Math.abs((newPrincipal + newInterest) - newTotal) > 0.01) {
+        return next(new AppError('本金和利息之和必须等于总还款额', 400, 4000));
+      }
+      
+      // 如果已有部分还款，需要验证已还金额不超过新的应还总额
+      if (schedule.paid_amount > newTotal) {
+        return next(new AppError('修改后的应还金额不能小于已还金额', 400, 4000));
+      }
+      
+      // 重新计算已还本金和利息的分配
+      if (schedule.paid_amount > 0) {
+        const paymentRatio = schedule.paid_amount / newTotal;
+        updateData.paid_principal = Math.min(newPrincipal, newPrincipal * paymentRatio);
+        updateData.paid_interest = Math.min(newInterest, newInterest * paymentRatio);
+      }
+    }
+    
+    // 更新还款计划
+    const updatedSchedule = await RepaymentSchedule.findOneAndUpdate(
+      { loan_id, period_number: parseInt(period_number) },
+      updateData,
+      { new: true, runValidators: true }
+    );
+    
+    // 如果修改了金额，需要重新计算贷款的总体状态
+    if (needRecalculate) {
+      await loan.updatePaymentStatus();
+    }
+    
+    // 记录操作日志
+    await SystemLog.createLog({
+      level: 'warning',
+      module: 'loan',
+      action: 'modify_repayment_schedule',
+      message: `修改还款计划: ${loan.loan_name} 第${period_number}期`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        loan_id: loan._id,
+        period_number: parseInt(period_number),
+        original_data: {
+          due_date: schedule.due_date,
+          total_amount: schedule.total_amount,
+          principal_amount: schedule.principal_amount,
+          interest_amount: schedule.interest_amount
+        },
+        updated_fields: Object.keys(updateData)
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '还款计划修改成功',
+      data: { 
+        schedule: updatedSchedule,
+        loan_status: {
+          repayment_status: loan.repayment_status,
+          total_paid_amount: loan.total_paid_amount,
+          paid_periods: loan.paid_periods,
+          payment_progress: loan.payment_progress
+        }
+      },
       code: 200,
       timestamp: new Date().toISOString()
     });
