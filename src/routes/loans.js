@@ -21,6 +21,9 @@ const RepaymentSchedule = require('../models/RepaymentSchedule');
 const AppError = require('../utils/AppError');
 const mongoose = require('mongoose');
 
+// 导入控制器方法
+const loanController = require('../controllers/loanController');
+
 const router = express.Router();
 
 // 构建贷款查询条件
@@ -125,6 +128,23 @@ router.get('/', authenticate, validate(loanQuerySchema, 'query'), async (req, re
       success: true,
       message: '获取贷款列表成功',
       data: responseData,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 获取贷款统计信息 (仅管理员) - 移到动态路由之前
+router.get('/statistics', authenticate, authorize('admin'), async (req, res, next) => {
+  try {
+    const stats = await Loan.getStatistics();
+    
+    res.json({
+      success: true,
+      message: '获取贷款统计成功',
+      data: stats,
       code: 200,
       timestamp: new Date().toISOString()
     });
@@ -444,22 +464,7 @@ router.delete('/:loan_id', authenticate, async (req, res, next) => {
   }
 });
 
-// 获取贷款统计信息 (仅管理员)
-router.get('/statistics', authenticate, authorize('admin'), async (req, res, next) => {
-  try {
-    const stats = await Loan.getStatistics();
-    
-    res.json({
-      success: true,
-      message: '获取贷款统计成功',
-      data: stats,
-      code: 200,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+
 
 // 等额本息还款计算
 router.post('/calculate/equal-installment', authenticate, async (req, res, next) => {
@@ -736,7 +741,117 @@ router.get('/:loan_id/repayment-schedule', authenticate, async (req, res, next) 
   }
 });
 
-// 记录还款
+// 简化的记录还款路由 (前端兼容)
+router.post('/:loan_id/payments', authenticate, authorize('admin'), async (req, res, next) => {
+  try {
+    const { loan_id } = req.params;
+    const { 
+      period_number,
+      paid_amount, 
+      payment_method, 
+      transaction_id, 
+      notes, 
+      paid_date 
+    } = req.body;
+    
+    // 参数验证
+    if (!period_number) {
+      return next(new AppError('期数是必填的', 400, 4000));
+    }
+    
+    const loan = await Loan.findById(loan_id);
+    if (!loan) {
+      return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    const schedule = await RepaymentSchedule.findOne({
+      loan_id,
+      period_number: parseInt(period_number)
+    });
+    
+    if (!schedule) {
+      return next(new AppError('还款计划不存在', 404, 4040));
+    }
+    
+    if (schedule.status === 'paid') {
+      return next(new AppError('该期已经还款', 400, 4000));
+    }
+    
+    // 验证还款金额
+    if (!paid_amount || paid_amount <= 0) {
+      return next(new AppError('还款金额必须大于0', 400, 4000));
+    }
+    
+    const remainingAmount = schedule.total_amount - schedule.paid_amount;
+    if (paid_amount > remainingAmount) {
+      return next(new AppError('还款金额超过应还金额', 400, 4000));
+    }
+    
+    // 记录还款
+    const paymentData = {
+      paid_date: paid_date ? new Date(paid_date) : new Date(),
+      payment_method,
+      transaction_id,
+      notes,
+      updated_by: req.user._id
+    };
+    
+    if (paid_amount >= remainingAmount) {
+      // 全额还款
+      schedule.markAsPaid(paymentData);
+    } else {
+      // 部分还款
+      schedule.makePartialPayment(paid_amount, paymentData);
+    }
+    
+    await schedule.save();
+    
+    // 更新贷款的还款状态
+    await loan.updatePaymentStatus();
+    
+    // 记录操作日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'loan',
+      action: 'record_payment',
+      message: `记录贷款还款: ${loan.loan_name} 第${period_number}期`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        loan_id: loan._id,
+        period_number: parseInt(period_number),
+        paid_amount,
+        payment_method,
+        transaction_id
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '还款记录成功',
+      data: { 
+        schedule,
+        loan_status: {
+          repayment_status: loan.repayment_status,
+          total_paid_amount: loan.total_paid_amount,
+          paid_periods: loan.paid_periods,
+          payment_progress: loan.payment_progress
+        }
+      },
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 记录还款 (详细路由)
 router.post('/:loan_id/repayment-schedule/:period_number/payment', authenticate, async (req, res, next) => {
   try {
     const { loan_id, period_number } = req.params;
@@ -837,6 +952,56 @@ router.post('/:loan_id/repayment-schedule/:period_number/payment', authenticate,
           payment_progress: loan.payment_progress
         }
       },
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 获取还款历史记录 (前端兼容)
+router.get('/:loan_id/payments', authenticate, async (req, res, next) => {
+  try {
+    const { loan_id } = req.params;
+    const { page = 1, per_page = 50, status } = req.query;
+    
+    const loan = await Loan.findById(loan_id);
+    if (!loan) {
+      return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    // 权限检查
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return next(new AppError('只能查看自己的贷款还款记录', 403, 1003));
+    }
+    
+    // 构建查询条件
+    const filter = { loan_id };
+    if (status) {
+      filter.status = status;
+    }
+    
+    const skip = (page - 1) * per_page;
+    
+    // 查询还款记录
+    const payments = await RepaymentSchedule.find(filter)
+      .sort({ period_number: 1 })
+      .skip(skip)
+      .limit(per_page);
+    
+    const total = await RepaymentSchedule.countDocuments(filter);
+    
+    // 获取还款统计
+    const stats = await RepaymentSchedule.getLoanPaymentStats(loan_id);
+    
+    const responseData = buildPaginationResponse(payments, page, per_page, total);
+    responseData.payment_stats = stats;
+    
+    res.json({
+      success: true,
+      message: '获取还款记录成功',
+      data: responseData,
       code: 200,
       timestamp: new Date().toISOString()
     });
@@ -1275,5 +1440,15 @@ router.put('/:loan_id/repayment-schedule/:period_number', authenticate, authoriz
     next(error);
   }
 });
+
+// 添加控制器路由（按照文档要求）
+// 还款计划和统计
+router.get('/:loanId/repayment-schedule', authenticate, loanController.getRepaymentSchedule);
+router.get('/:loanId/payment-stats', authenticate, loanController.getPaymentStats);
+
+// 还款记录和修改（管理员权限）
+router.post('/:loanId/payments', authenticate, authorize('admin'), loanController.recordPayment);
+router.put('/:loanId/repayment-schedule/:periodNumber', authenticate, authorize('admin'), loanController.modifySchedulePeriod);
+router.put('/:loanId/repayment-schedule/batch', authenticate, authorize('admin'), loanController.batchModifySchedule);
 
 module.exports = router; 

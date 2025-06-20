@@ -64,6 +64,15 @@ const repaymentScheduleSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  actual_paid_amount: {
+    type: Number,
+    min: [0, '实际支付金额不能为负数'],
+    default: null
+  },
+  actual_paid_date: {
+    type: Date,
+    default: null
+  },
   payment_method: {
     type: String,
     enum: {
