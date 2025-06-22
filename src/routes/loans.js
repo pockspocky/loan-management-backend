@@ -17,6 +17,7 @@ const {
   compareRepaymentMethods,
   calculatePrepayment 
 } = require('../utils/loanCalculator');
+const PrecisionMath = require('../utils/precisionMath');
 const RepaymentSchedule = require('../models/RepaymentSchedule');
 const AppError = require('../utils/AppError');
 const mongoose = require('mongoose');
@@ -476,11 +477,53 @@ router.post('/calculate/equal-installment', authenticate, async (req, res, next)
       return next(new AppError('请提供完整的计算参数', 400, 4000));
     }
     
-    if (principal <= 0 || annual_rate < 0 || months <= 0) {
+    const P = PrecisionMath.safeDecimal(principal);
+    const r = PrecisionMath.safeDecimal(annual_rate);
+    const n = PrecisionMath.safeDecimal(months);
+    
+    if (!PrecisionMath.greaterThan(P, 0) || PrecisionMath.lessThan(r, 0) || !PrecisionMath.greaterThan(n, 0)) {
       return next(new AppError('参数错误：本金必须大于0，利率不能为负数，期数必须大于0', 400, 4000));
     }
     
-    const result = calculateEqualInstallment(principal, annual_rate, months);
+    // 使用高精度计算
+    const annualRateDecimal = PrecisionMath.divide(r, 100);
+    const monthlyPayment = PrecisionMath.calculateEqualInstallment(
+      PrecisionMath.toNumber(P), 
+      PrecisionMath.toNumber(annualRateDecimal), 
+      PrecisionMath.toNumber(n)
+    );
+    const totalPayment = PrecisionMath.multiply(monthlyPayment, n);
+    const totalInterest = PrecisionMath.subtract(totalPayment, P);
+    
+    // 生成详细还款计划
+    const schedule = [];
+    let remainingPrincipal = P;
+    const monthlyRate = PrecisionMath.divide(annualRateDecimal, 12);
+    
+    for (let i = 1; i <= PrecisionMath.toNumber(n); i++) {
+      const interestPayment = PrecisionMath.multiply(remainingPrincipal, monthlyRate);
+      const principalPayment = PrecisionMath.subtract(monthlyPayment, interestPayment);
+      remainingPrincipal = PrecisionMath.subtract(remainingPrincipal, principalPayment);
+      
+      schedule.push({
+        period: i,
+        monthlyPayment: PrecisionMath.toNumber(PrecisionMath.round(monthlyPayment)),
+        principalPayment: PrecisionMath.toNumber(PrecisionMath.round(principalPayment)),
+        interestPayment: PrecisionMath.toNumber(PrecisionMath.round(interestPayment)),
+        remainingPrincipal: PrecisionMath.toNumber(PrecisionMath.round(remainingPrincipal))
+      });
+    }
+    
+    const result = {
+      type: 'equalInstallment',
+      principal: PrecisionMath.toNumber(P),
+      annualRate: PrecisionMath.toNumber(r),
+      months: PrecisionMath.toNumber(n),
+      monthlyPayment: PrecisionMath.toNumber(PrecisionMath.round(monthlyPayment)),
+      totalPayment: PrecisionMath.toNumber(PrecisionMath.round(totalPayment)),
+      totalInterest: PrecisionMath.toNumber(PrecisionMath.round(totalInterest)),
+      schedule
+    };
     
     // 记录计算日志
     await SystemLog.createLog({
@@ -496,9 +539,9 @@ router.post('/calculate/equal-installment', authenticate, async (req, res, next)
       request_url: req.originalUrl,
       response_status: 200,
       metadata: {
-        principal,
-        annual_rate,
-        months,
+        principal: result.principal,
+        annual_rate: result.annualRate,
+        months: result.months,
         monthly_payment: result.monthlyPayment,
         total_payment: result.totalPayment,
         total_interest: result.totalInterest
@@ -527,11 +570,63 @@ router.post('/calculate/equal-principal', authenticate, async (req, res, next) =
       return next(new AppError('请提供完整的计算参数', 400, 4000));
     }
     
-    if (principal <= 0 || annual_rate < 0 || months <= 0) {
+    const P = PrecisionMath.safeDecimal(principal);
+    const r = PrecisionMath.safeDecimal(annual_rate);
+    const n = PrecisionMath.safeDecimal(months);
+    
+    if (!PrecisionMath.greaterThan(P, 0) || PrecisionMath.lessThan(r, 0) || !PrecisionMath.greaterThan(n, 0)) {
       return next(new AppError('参数错误：本金必须大于0，利率不能为负数，期数必须大于0', 400, 4000));
     }
     
-    const result = calculateEqualPrincipal(principal, annual_rate, months);
+    // 使用高精度计算
+    const annualRateDecimal = PrecisionMath.divide(r, 100);
+    const monthlyPrincipal = PrecisionMath.divide(P, n);
+    const monthlyRate = PrecisionMath.divide(annualRateDecimal, 12);
+    
+    // 计算首月还款
+    const firstMonthInterest = PrecisionMath.multiply(P, monthlyRate);
+    const firstMonthPayment = PrecisionMath.add(monthlyPrincipal, firstMonthInterest);
+    
+    // 计算末月还款
+    const lastMonthPrincipal = PrecisionMath.subtract(P, PrecisionMath.multiply(monthlyPrincipal, PrecisionMath.subtract(n, 1)));
+    const lastMonthInterest = PrecisionMath.multiply(lastMonthPrincipal, monthlyRate);
+    const lastMonthPayment = PrecisionMath.add(monthlyPrincipal, lastMonthInterest);
+    
+    // 生成详细还款计划
+    const schedule = [];
+    let remainingPrincipal = P;
+    let totalPayment = PrecisionMath.decimal(0);
+    let totalInterest = PrecisionMath.decimal(0);
+    
+    for (let i = 1; i <= PrecisionMath.toNumber(n); i++) {
+      const interestPayment = PrecisionMath.multiply(remainingPrincipal, monthlyRate);
+      const totalMonthlyPayment = PrecisionMath.add(monthlyPrincipal, interestPayment);
+      remainingPrincipal = PrecisionMath.subtract(remainingPrincipal, monthlyPrincipal);
+      
+      totalPayment = PrecisionMath.add(totalPayment, totalMonthlyPayment);
+      totalInterest = PrecisionMath.add(totalInterest, interestPayment);
+      
+      schedule.push({
+        period: i,
+        monthlyPayment: PrecisionMath.toNumber(PrecisionMath.round(totalMonthlyPayment)),
+        principalPayment: PrecisionMath.toNumber(PrecisionMath.round(monthlyPrincipal)),
+        interestPayment: PrecisionMath.toNumber(PrecisionMath.round(interestPayment)),
+        remainingPrincipal: PrecisionMath.toNumber(PrecisionMath.round(remainingPrincipal))
+      });
+    }
+    
+    const result = {
+      type: 'equalPrincipal',
+      principal: PrecisionMath.toNumber(P),
+      annualRate: PrecisionMath.toNumber(r),
+      months: PrecisionMath.toNumber(n),
+      monthlyPrincipal: PrecisionMath.toNumber(PrecisionMath.round(monthlyPrincipal)),
+      firstMonthPayment: PrecisionMath.toNumber(PrecisionMath.round(firstMonthPayment)),
+      lastMonthPayment: PrecisionMath.toNumber(PrecisionMath.round(lastMonthPayment)),
+      totalPayment: PrecisionMath.toNumber(PrecisionMath.round(totalPayment)),
+      totalInterest: PrecisionMath.toNumber(PrecisionMath.round(totalInterest)),
+      schedule
+    };
     
     // 记录计算日志
     await SystemLog.createLog({
@@ -547,9 +642,9 @@ router.post('/calculate/equal-principal', authenticate, async (req, res, next) =
       request_url: req.originalUrl,
       response_status: 200,
       metadata: {
-        principal,
-        annual_rate,
-        months,
+        principal: result.principal,
+        annual_rate: result.annualRate,
+        months: result.months,
         monthly_principal: result.monthlyPrincipal,
         first_month_payment: result.firstMonthPayment,
         last_month_payment: result.lastMonthPayment,
@@ -580,11 +675,74 @@ router.post('/calculate/compare', authenticate, async (req, res, next) => {
       return next(new AppError('请提供完整的计算参数', 400, 4000));
     }
     
-    if (principal <= 0 || annual_rate < 0 || months <= 0) {
+    const P = PrecisionMath.safeDecimal(principal);
+    const r = PrecisionMath.safeDecimal(annual_rate);
+    const n = PrecisionMath.safeDecimal(months);
+    
+    if (!PrecisionMath.greaterThan(P, 0) || PrecisionMath.lessThan(r, 0) || !PrecisionMath.greaterThan(n, 0)) {
       return next(new AppError('参数错误：本金必须大于0，利率不能为负数，期数必须大于0', 400, 4000));
     }
     
-    const result = compareRepaymentMethods(principal, annual_rate, months);
+    // 高精度计算等额本息
+    const annualRateDecimal = PrecisionMath.divide(r, 100);
+    const monthlyPaymentInstallment = PrecisionMath.calculateEqualInstallment(
+      PrecisionMath.toNumber(P), 
+      PrecisionMath.toNumber(annualRateDecimal), 
+      PrecisionMath.toNumber(n)
+    );
+    const totalPaymentInstallment = PrecisionMath.multiply(monthlyPaymentInstallment, n);
+    const totalInterestInstallment = PrecisionMath.subtract(totalPaymentInstallment, P);
+    
+    // 高精度计算等额本金
+    const monthlyPrincipal = PrecisionMath.divide(P, n);
+    const monthlyRate = PrecisionMath.divide(annualRateDecimal, 12);
+    
+    let totalPaymentPrincipal = PrecisionMath.decimal(0);
+    let totalInterestPrincipal = PrecisionMath.decimal(0);
+    let remainingPrincipal = P;
+    
+    for (let i = 1; i <= PrecisionMath.toNumber(n); i++) {
+      const interestPayment = PrecisionMath.multiply(remainingPrincipal, monthlyRate);
+      const totalMonthlyPayment = PrecisionMath.add(monthlyPrincipal, interestPayment);
+      
+      totalPaymentPrincipal = PrecisionMath.add(totalPaymentPrincipal, totalMonthlyPayment);
+      totalInterestPrincipal = PrecisionMath.add(totalInterestPrincipal, interestPayment);
+      remainingPrincipal = PrecisionMath.subtract(remainingPrincipal, monthlyPrincipal);
+    }
+    
+    // 计算首月和末月还款
+    const firstMonthInterest = PrecisionMath.multiply(P, monthlyRate);
+    const firstMonthPayment = PrecisionMath.add(monthlyPrincipal, firstMonthInterest);
+    
+    const lastMonthPrincipal = PrecisionMath.subtract(P, PrecisionMath.multiply(monthlyPrincipal, PrecisionMath.subtract(n, 1)));
+    const lastMonthInterest = PrecisionMath.multiply(lastMonthPrincipal, monthlyRate);
+    const lastMonthPayment = PrecisionMath.add(monthlyPrincipal, lastMonthInterest);
+    
+    // 计算差异
+    const interestDifference = PrecisionMath.subtract(totalInterestInstallment, totalInterestPrincipal);
+    const paymentDifference = PrecisionMath.subtract(monthlyPaymentInstallment, firstMonthPayment);
+    
+    const result = {
+      equalInstallment: {
+        type: 'equalInstallment',
+        monthlyPayment: PrecisionMath.toNumber(PrecisionMath.round(monthlyPaymentInstallment)),
+        totalPayment: PrecisionMath.toNumber(PrecisionMath.round(totalPaymentInstallment)),
+        totalInterest: PrecisionMath.toNumber(PrecisionMath.round(totalInterestInstallment))
+      },
+      equalPrincipal: {
+        type: 'equalPrincipal',
+        monthlyPrincipal: PrecisionMath.toNumber(PrecisionMath.round(monthlyPrincipal)),
+        firstMonthPayment: PrecisionMath.toNumber(PrecisionMath.round(firstMonthPayment)),
+        lastMonthPayment: PrecisionMath.toNumber(PrecisionMath.round(lastMonthPayment)),
+        totalPayment: PrecisionMath.toNumber(PrecisionMath.round(totalPaymentPrincipal)),
+        totalInterest: PrecisionMath.toNumber(PrecisionMath.round(totalInterestPrincipal))
+      },
+      comparison: {
+        interestDifference: PrecisionMath.toNumber(PrecisionMath.round(interestDifference)),
+        paymentDifference: PrecisionMath.toNumber(PrecisionMath.round(paymentDifference)),
+        recommendation: PrecisionMath.greaterThan(interestDifference, 0) ? 'equalPrincipal' : 'equalInstallment'
+      }
+    };
     
     // 记录计算日志
     await SystemLog.createLog({
@@ -600,9 +758,9 @@ router.post('/calculate/compare', authenticate, async (req, res, next) => {
       request_url: req.originalUrl,
       response_status: 200,
       metadata: {
-        principal,
-        annual_rate,
-        months,
+        principal: PrecisionMath.toNumber(P),
+        annual_rate: PrecisionMath.toNumber(r),
+        months: PrecisionMath.toNumber(n),
         interest_difference: result.comparison.interestDifference,
         payment_difference: result.comparison.paymentDifference
       }

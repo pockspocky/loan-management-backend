@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const PrecisionMath = require('./precisionMath');
 
 // 生成还款计划
 async function generateRepaymentSchedule(loan) {
@@ -43,19 +44,24 @@ async function generateRepaymentSchedule(loan) {
 async function generateEqualInstallmentSchedule(loan) {
   const RepaymentSchedule = require('../models/RepaymentSchedule');
   
-  const principal = Number(loan.amount);
-  const annualRate = Number(loan.interest_rate) / 100;
-  const months = Number(loan.term);
-  const monthlyRate = annualRate / 12;
+  const principal = PrecisionMath.safeDecimal(loan.amount);
+  const annualRate = PrecisionMath.divide(PrecisionMath.safeDecimal(loan.interest_rate), 100);
+  const months = PrecisionMath.safeDecimal(loan.term);
+  const monthlyRate = PrecisionMath.divide(annualRate, 12);
   
-  console.log('等额本息计算参数:', { principal, annualRate, months, monthlyRate });
+  console.log('等额本息计算参数:', { 
+    principal: PrecisionMath.toNumber(principal), 
+    annualRate: PrecisionMath.toNumber(annualRate), 
+    months: PrecisionMath.toNumber(months), 
+    monthlyRate: PrecisionMath.toNumber(monthlyRate) 
+  });
   
-  if (monthlyRate === 0) {
+  if (monthlyRate.equals(0)) {
     // 无息贷款
-    const monthlyPayment = principal / months;
+    const monthlyPayment = PrecisionMath.divide(principal, months);
     const schedules = [];
     
-    for (let i = 1; i <= months; i++) {
+    for (let i = 1; i <= PrecisionMath.toNumber(months); i++) {
       const dueDate = new Date(loan.created_at || new Date());
       dueDate.setMonth(dueDate.getMonth() + i);
       
@@ -63,9 +69,10 @@ async function generateEqualInstallmentSchedule(loan) {
         loan_id: loan._id,
         period_number: i,
         due_date: dueDate,
-        total_amount: Math.round(monthlyPayment * 100) / 100,
-        principal_amount: Math.round(monthlyPayment * 100) / 100,
+        total_amount: PrecisionMath.toNumber(PrecisionMath.round(monthlyPayment)),
+        principal_amount: PrecisionMath.toNumber(PrecisionMath.round(monthlyPayment)),
         interest_amount: 0,
+        remaining_principal: PrecisionMath.toNumber(PrecisionMath.round(PrecisionMath.subtract(principal, PrecisionMath.multiply(monthlyPayment, i)))),
         status: 'pending'
       });
     }
@@ -76,18 +83,21 @@ async function generateEqualInstallmentSchedule(loan) {
   }
   
   // 有息贷款
-  const monthlyPayment = (principal * monthlyRate * Math.pow(1 + monthlyRate, months)) / 
-                        (Math.pow(1 + monthlyRate, months) - 1);
+  const monthlyPayment = PrecisionMath.calculateEqualInstallment(
+    PrecisionMath.toNumber(principal),
+    PrecisionMath.toNumber(annualRate), 
+    PrecisionMath.toNumber(months)
+  );
   
-  console.log('月供金额:', monthlyPayment);
+  console.log('月供金额:', PrecisionMath.toNumber(monthlyPayment));
   
   let remainingPrincipal = principal;
   const schedules = [];
   
-  for (let i = 1; i <= months; i++) {
-    const interestPayment = remainingPrincipal * monthlyRate;
-    const principalPayment = monthlyPayment - interestPayment;
-    remainingPrincipal -= principalPayment;
+  for (let i = 1; i <= PrecisionMath.toNumber(months); i++) {
+    const interestPayment = PrecisionMath.multiply(remainingPrincipal, monthlyRate);
+    const principalPayment = PrecisionMath.subtract(monthlyPayment, interestPayment);
+    remainingPrincipal = PrecisionMath.subtract(remainingPrincipal, principalPayment);
     
     const dueDate = new Date(loan.created_at || new Date());
     dueDate.setMonth(dueDate.getMonth() + i);
@@ -96,9 +106,10 @@ async function generateEqualInstallmentSchedule(loan) {
       loan_id: loan._id,
       period_number: i,
       due_date: dueDate,
-      total_amount: Math.round(monthlyPayment * 100) / 100,
-      principal_amount: Math.round(principalPayment * 100) / 100,
-      interest_amount: Math.round(interestPayment * 100) / 100,
+      total_amount: PrecisionMath.toNumber(PrecisionMath.round(monthlyPayment)),
+      principal_amount: PrecisionMath.toNumber(PrecisionMath.round(principalPayment)),
+      interest_amount: PrecisionMath.toNumber(PrecisionMath.round(interestPayment)),
+      remaining_principal: PrecisionMath.toNumber(PrecisionMath.round(remainingPrincipal)),
       status: 'pending'
     });
   }
@@ -112,21 +123,26 @@ async function generateEqualInstallmentSchedule(loan) {
 async function generateEqualPrincipalSchedule(loan) {
   const RepaymentSchedule = require('../models/RepaymentSchedule');
   
-  const principal = Number(loan.amount);
-  const annualRate = Number(loan.interest_rate) / 100;
-  const months = Number(loan.term);
-  const monthlyRate = annualRate / 12;
-  const monthlyPrincipal = principal / months;
+  const principal = PrecisionMath.safeDecimal(loan.amount);
+  const annualRate = PrecisionMath.divide(PrecisionMath.safeDecimal(loan.interest_rate), 100);
+  const months = PrecisionMath.safeDecimal(loan.term);
+  const monthlyRate = PrecisionMath.divide(annualRate, 12);
+  const monthlyPrincipal = PrecisionMath.divide(principal, months);
   
-  console.log('等额本金计算参数:', { principal, annualRate, months, monthlyPrincipal });
+  console.log('等额本金计算参数:', { 
+    principal: PrecisionMath.toNumber(principal), 
+    annualRate: PrecisionMath.toNumber(annualRate), 
+    months: PrecisionMath.toNumber(months), 
+    monthlyPrincipal: PrecisionMath.toNumber(monthlyPrincipal) 
+  });
   
   let remainingPrincipal = principal;
   const schedules = [];
   
-  for (let i = 1; i <= months; i++) {
-    const interestPayment = remainingPrincipal * monthlyRate;
-    const totalPayment = monthlyPrincipal + interestPayment;
-    remainingPrincipal -= monthlyPrincipal;
+  for (let i = 1; i <= PrecisionMath.toNumber(months); i++) {
+    const interestPayment = PrecisionMath.multiply(remainingPrincipal, monthlyRate);
+    const totalPayment = PrecisionMath.add(monthlyPrincipal, interestPayment);
+    remainingPrincipal = PrecisionMath.subtract(remainingPrincipal, monthlyPrincipal);
     
     const dueDate = new Date(loan.created_at || new Date());
     dueDate.setMonth(dueDate.getMonth() + i);
@@ -135,9 +151,10 @@ async function generateEqualPrincipalSchedule(loan) {
       loan_id: loan._id,
       period_number: i,
       due_date: dueDate,
-      total_amount: Math.round(totalPayment * 100) / 100,
-      principal_amount: Math.round(monthlyPrincipal * 100) / 100,
-      interest_amount: Math.round(interestPayment * 100) / 100,
+      total_amount: PrecisionMath.toNumber(PrecisionMath.round(totalPayment)),
+      principal_amount: PrecisionMath.toNumber(PrecisionMath.round(monthlyPrincipal)),
+      interest_amount: PrecisionMath.toNumber(PrecisionMath.round(interestPayment)),
+      remaining_principal: PrecisionMath.toNumber(PrecisionMath.round(remainingPrincipal)),
       status: 'pending'
     });
   }

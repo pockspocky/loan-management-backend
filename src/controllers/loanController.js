@@ -3,6 +3,7 @@ const Loan = require('../models/Loan');
 const RepaymentSchedule = require('../models/RepaymentSchedule');
 const Payment = require('../models/Payment');
 const { generateRepaymentSchedule } = require('../utils/repaymentCalculator');
+const PrecisionMath = require('../utils/precisionMath');
 
 // 获取还款计划
 exports.getRepaymentSchedule = async (req, res, next) => {
@@ -103,29 +104,33 @@ exports.getPaymentStats = async (req, res, next) => {
       status: 'overdue' 
     });
 
-    // 计算剩余应还金额
-    const remainingAmount = await RepaymentSchedule.aggregate([
-      { 
-        $match: { 
-          loan_id: new mongoose.Types.ObjectId(loanId), 
-          status: { $ne: 'paid' } 
-        } 
-      },
-      { 
-        $group: { 
-          _id: null, 
-          total: { $sum: '$total_amount' } 
-        } 
-      }
-    ]);
+    // 计算详细统计数据
+    const allSchedules = await RepaymentSchedule.find({ loan_id: loanId });
+    
+    let totalAmount = PrecisionMath.decimal(0);
+    let paidAmount = PrecisionMath.decimal(0);
+    
+    allSchedules.forEach(schedule => {
+      const scheduleTotal = PrecisionMath.safeDecimal(schedule.total_amount);
+      const schedulePaid = PrecisionMath.safeDecimal(schedule.actual_paid_amount || 0);
+      
+      totalAmount = PrecisionMath.add(totalAmount, scheduleTotal);
+      paidAmount = PrecisionMath.add(paidAmount, schedulePaid);
+    });
+    
+    const remainingAmount = PrecisionMath.subtract(totalAmount, paidAmount);
+    const paymentProgress = PrecisionMath.greaterThan(totalAmount, 0) ? 
+      PrecisionMath.toNumber(PrecisionMath.multiply(PrecisionMath.divide(paidAmount, totalAmount), 100)) : 0;
 
     const stats = {
       total_periods: totalPeriods,
       paid_periods: paidPeriods,
       pending_periods: totalPeriods - paidPeriods,
       overdue_periods: overduePeriods,
-      payment_progress: totalPeriods > 0 ? Math.round((paidPeriods / totalPeriods) * 100) : 0,
-      remaining_amount: remainingAmount[0]?.total || 0
+      total_amount: PrecisionMath.toNumber(PrecisionMath.round(totalAmount)),
+      paid_amount: PrecisionMath.toNumber(PrecisionMath.round(paidAmount)),
+      remaining_amount: PrecisionMath.toNumber(PrecisionMath.round(remainingAmount)),
+      payment_progress: Math.round(paymentProgress)
     };
 
     res.status(200).json({

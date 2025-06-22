@@ -1,5 +1,6 @@
 const Joi = require('joi');
 const AppError = require('./AppError');
+const PrecisionMath = require('./precisionMath');
 
 // 通用验证中间件
 const validate = (schema, property = 'body') => {
@@ -284,9 +285,88 @@ const validateInput = (data, rules) => {
   return { isValid, errors };
 };
 
+// 贷款数据验证
+const validateLoanData = (req, res, next) => {
+  const { amount, interest_rate, term } = req.body;
+  const errors = [];
+  
+  // 验证金额
+  if (!amount || !PrecisionMath.safeDecimal(amount).greaterThan(0)) {
+    errors.push('贷款金额必须大于0');
+  }
+  
+  const amountDecimal = PrecisionMath.safeDecimal(amount);
+  if (PrecisionMath.lessThan(amountDecimal, 1000)) {
+    errors.push('贷款金额不能少于1000元');
+  }
+  
+  if (PrecisionMath.greaterThan(amountDecimal, 100000000)) {
+    errors.push('贷款金额不能超过1亿元');
+  }
+  
+  // 验证利率
+  if (!interest_rate || !PrecisionMath.safeDecimal(interest_rate).greaterThan(0)) {
+    errors.push('年利率必须大于0');
+  }
+  
+  const rateDecimal = PrecisionMath.safeDecimal(interest_rate);
+  if (PrecisionMath.greaterThan(rateDecimal, 36)) {
+    errors.push('年利率不能超过36%');
+  }
+  
+  // 验证期限
+  if (!term || !PrecisionMath.safeDecimal(term).greaterThan(0)) {
+    errors.push('还款期限必须大于0');
+  }
+  
+  const termDecimal = PrecisionMath.safeDecimal(term);
+  if (PrecisionMath.greaterThan(termDecimal, 360)) {
+    errors.push('还款期限不能超过360个月');
+  }
+  
+  if (errors.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: '数据验证失败',
+      errors
+    });
+  }
+  
+  next();
+};
+
+// 还款数据验证
+const validateRepaymentData = (req, res, next) => {
+  const { paid_amount, total_amount } = req.body;
+  const errors = [];
+  
+  const paidDecimal = PrecisionMath.safeDecimal(paid_amount);
+  const totalDecimal = PrecisionMath.safeDecimal(total_amount);
+  
+  if (!PrecisionMath.greaterThan(paidDecimal, 0)) {
+    errors.push('还款金额必须大于0');
+  }
+  
+  if (PrecisionMath.greaterThan(paidDecimal, totalDecimal)) {
+    errors.push('还款金额不能超过应还金额');
+  }
+  
+  if (errors.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: '数据验证失败',
+      errors
+    });
+  }
+  
+  next();
+};
+
 module.exports = {
   validate,
   validateInput,
+  validateLoanData,
+  validateRepaymentData,
   userRegistrationSchema,
   userLoginSchema,
   userUpdateSchema,
