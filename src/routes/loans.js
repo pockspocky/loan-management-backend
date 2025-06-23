@@ -7,8 +7,10 @@ const {
   validate, 
   loanCreateSchema, 
   loanUpdateSchema, 
-  loanApprovalSchema,
-  loanQuerySchema 
+  loanQuerySchema,
+  paymentCreateSchema,
+  paymentUpdateSchema,
+  repaymentModifySchema
 } = require('../utils/validation');
 const { buildPaginationResponse, buildSortObject, buildDateRangeQuery } = require('../utils/helpers');
 const { 
@@ -94,7 +96,6 @@ router.get('/', authenticate, validate(loanQuerySchema, 'query'), async (req, re
     // 查询贷款列表
     const loans = await Loan.find(filter)
       .populate('applicant_id', 'username real_name email')
-      .populate('approved_by', 'username real_name')
       .sort(sortObj)
       .skip(skip)
       .limit(per_page);
@@ -160,8 +161,7 @@ router.get('/:loan_id', authenticate, async (req, res, next) => {
     const { loan_id } = req.params;
     
     const loan = await Loan.findById(loan_id)
-      .populate('applicant_id', 'username real_name email phone')
-      .populate('approved_by', 'username real_name');
+      .populate('applicant_id', 'username real_name email phone');
     
     if (!loan) {
       return next(new AppError('贷款不存在', 404, 4040));
@@ -236,6 +236,15 @@ router.post('/', authenticate, validate(loanCreateSchema), async (req, res, next
     
     await loan.save();
     
+    // 自动生成还款计划（无需审查）
+    try {
+      await loan.generateRepaymentSchedule();
+      await loan.save();
+    } catch (scheduleError) {
+      console.error('生成还款计划失败:', scheduleError);
+      // 贷款创建成功，但还款计划生成失败，记录警告
+    }
+    
     // 记录创建日志
     await SystemLog.createLog({
       level: 'info',
@@ -259,7 +268,7 @@ router.post('/', authenticate, validate(loanCreateSchema), async (req, res, next
     
     res.status(201).json({
       success: true,
-      message: '贷款申请创建成功',
+      message: '贷款创建成功',
       data: { loan },
       code: 201,
       timestamp: new Date().toISOString()
@@ -280,13 +289,10 @@ router.put('/:loan_id', authenticate, validate(loanUpdateSchema), async (req, re
       return next(new AppError('贷款不存在', 404, 4040));
     }
     
-    // 普通用户只能更新自己的待审批贷款
+    // 普通用户只能更新自己的贷款
     if (req.user.role !== 'admin') {
       if (loan.applicant_id.toString() !== req.user._id.toString()) {
         return next(new AppError('只能更新自己的贷款', 403, 1003));
-      }
-      if (loan.status !== 'pending') {
-        return next(new AppError('只能更新待审批的贷款', 400, 4000));
       }
     }
     
@@ -309,6 +315,19 @@ router.put('/:loan_id', authenticate, validate(loanUpdateSchema), async (req, re
       { new: true, runValidators: true }
     ).populate('applicant_id', 'username real_name email');
     
+    // 如果关键参数发生变化，重新生成还款计划
+    const keyFields = ['amount', 'interest_rate', 'term', 'repayment_method'];
+    const hasKeyChanges = keyFields.some(field => req.body[field] !== undefined);
+    
+    if (hasKeyChanges) {
+      try {
+        await updatedLoan.generateRepaymentSchedule();
+        await updatedLoan.save();
+      } catch (scheduleError) {
+        console.error('重新生成还款计划失败:', scheduleError);
+      }
+    }
+    
     // 记录更新日志
     await SystemLog.createLog({
       level: 'info',
@@ -327,7 +346,7 @@ router.put('/:loan_id', authenticate, validate(loanUpdateSchema), async (req, re
         updated_fields: Object.keys(updateData)
       }
     });
-    
+
     res.json({
       success: true,
       message: '贷款信息更新成功',
@@ -340,77 +359,7 @@ router.put('/:loan_id', authenticate, validate(loanUpdateSchema), async (req, re
   }
 });
 
-// 审批贷款 (仅管理员)
-router.patch('/:loan_id/approve', authenticate, authorize('admin'), validate(loanApprovalSchema), async (req, res, next) => {
-  try {
-    const { loan_id } = req.params;
-    const { status, remark, approved_amount, approved_rate } = req.body;
-    
-    const loan = await Loan.findById(loan_id).populate('applicant_id', 'username real_name email');
-    
-    if (!loan) {
-      return next(new AppError('贷款不存在', 404, 4040));
-    }
-    
-    if (loan.status !== 'pending') {
-      return next(new AppError('只能审批待审核的贷款', 400, 4000));
-    }
-    
-    // 更新贷款状态
-    loan.status = status;
-    loan.remark = remark;
-    loan.approval_date = new Date();
-    loan.approved_by = req.user._id;
-    
-    if (status === 'approved') {
-      loan.approved_amount = approved_amount || loan.amount;
-      loan.approved_rate = approved_rate || loan.interest_rate;
-      
-      // 生成还款计划
-      try {
-        await loan.generateRepaymentSchedule();
-      } catch (scheduleError) {
-        console.error('生成还款计划失败:', scheduleError);
-        // 可以选择回滚贷款状态或者记录错误
-      }
-    }
-    
-    await loan.save();
-    
-    // 记录审批日志
-    await SystemLog.createLog({
-      level: 'warning',
-      module: 'loan',
-      action: 'approve_loan',
-      message: `审批贷款: ${loan.loan_name} - ${status}`,
-      user_id: req.user._id,
-      username: req.user.username,
-      ip_address: req.ip || req.connection.remoteAddress,
-      user_agent: req.get('User-Agent'),
-      request_method: req.method,
-      request_url: req.originalUrl,
-      response_status: 200,
-      metadata: {
-        loan_id: loan._id,
-        loan_name: loan.loan_name,
-        applicant_name: loan.applicant_name,
-        approval_status: status,
-        approved_amount: loan.approved_amount,
-        approved_rate: loan.approved_rate
-      }
-    });
-    
-    res.json({
-      success: true,
-      message: `贷款${status === 'approved' ? '审批通过' : '审批拒绝'}`,
-      data: { loan },
-      code: 200,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+// 审查功能已移除 - 贷款创建后自动生成还款计划
 
 // 删除贷款
 router.delete('/:loan_id', authenticate, async (req, res, next) => {
@@ -423,13 +372,19 @@ router.delete('/:loan_id', authenticate, async (req, res, next) => {
       return next(new AppError('贷款不存在', 404, 4040));
     }
     
-    // 普通用户只能删除自己的待审批贷款
+    // 普通用户只能删除自己的贷款
     if (req.user.role !== 'admin') {
       if (loan.applicant_id.toString() !== req.user._id.toString()) {
         return next(new AppError('只能删除自己的贷款', 403, 1003));
       }
-      if (loan.status !== 'pending') {
-        return next(new AppError('只能删除待审批的贷款', 400, 4000));
+      // 如果贷款已有还款记录，不允许删除
+      const paidSchedules = await RepaymentSchedule.findOne({
+        loan_id,
+        status: 'paid'
+      });
+      
+      if (paidSchedules) {
+        return next(new AppError('已有还款记录的贷款不能删除', 400, 4000));
       }
     }
     
@@ -464,8 +419,6 @@ router.delete('/:loan_id', authenticate, async (req, res, next) => {
     next(error);
   }
 });
-
-
 
 // 等额本息还款计算
 router.post('/calculate/equal-installment', authenticate, async (req, res, next) => {
@@ -1222,8 +1175,8 @@ router.get('/:loan_id/payment-stats', authenticate, async (req, res, next) => {
   }
 });
 
-// 重新生成还款计划（仅管理员）
-router.post('/:loan_id/regenerate-schedule', authenticate, authorize('admin'), async (req, res, next) => {
+// 为贷款生成还款计划（用户和管理员都可以使用）
+router.post('/:loan_id/generate-schedule', authenticate, async (req, res, next) => {
   try {
     const { loan_id } = req.params;
     const { start_date } = req.body;
@@ -1233,8 +1186,9 @@ router.post('/:loan_id/regenerate-schedule', authenticate, authorize('admin'), a
       return next(new AppError('贷款不存在', 404, 4040));
     }
     
-    if (loan.status !== 'approved') {
-      return next(new AppError('只有已审批的贷款才能生成还款计划', 400, 4000));
+    // 权限检查：普通用户只能操作自己的贷款
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return next(new AppError('只能操作自己的贷款', 403, 1003));
     }
     
     // 检查是否已有还款记录
@@ -1247,21 +1201,21 @@ router.post('/:loan_id/regenerate-schedule', authenticate, authorize('admin'), a
       return next(new AppError('已有还款记录，无法重新生成还款计划', 400, 4000));
     }
     
-    // 设置新的还款开始日期
+    // 设置还款开始日期
     if (start_date) {
       loan.repayment_start_date = new Date(start_date);
     }
     
-    // 重新生成还款计划
+    // 生成还款计划
     const calculationResult = await loan.generateRepaymentSchedule();
     await loan.save();
     
     // 记录操作日志
     await SystemLog.createLog({
-      level: 'warning',
+      level: 'info',
       module: 'loan',
-      action: 'regenerate_schedule',
-      message: `重新生成还款计划: ${loan.loan_name}`,
+      action: 'generate_schedule',
+      message: `生成还款计划: ${loan.loan_name}`,
       user_id: req.user._id,
       username: req.user.username,
       ip_address: req.ip || req.connection.remoteAddress,
@@ -1277,7 +1231,7 @@ router.post('/:loan_id/regenerate-schedule', authenticate, authorize('admin'), a
     
     res.json({
       success: true,
-      message: '还款计划重新生成成功',
+      message: '还款计划生成成功',
       data: { 
         loan,
         calculation_result: calculationResult

@@ -122,24 +122,24 @@ router.get('/admin', authenticate, authorize('admin'), async (req, res, next) =>
     
     // 状态分布
     const statusDistribution = {
-      pending: loanStats.find(s => s._id === 'pending')?.count || 0,
-      approved: loanStats.find(s => s._id === 'approved')?.count || 0,
-      rejected: loanStats.find(s => s._id === 'rejected')?.count || 0,
-      completed: loanStats.find(s => s._id === 'completed')?.count || 0
+      active: loanStats.active_loans || 0,
+      completed: loanStats.completed_loans || 0
+    };
+    
+    const overview = {
+      total_users: totalUsers,
+      total_loans: loanStats.total_loans,
+      active_loans: loanStats.active_loans,
+      completed_loans: loanStats.completed_loans,
+      total_amount: loanStats.total_amount,
+      average_amount: loanStats.average_amount
     };
     
     res.json({
       success: true,
       message: '获取管理员仪表盘数据成功',
       data: {
-        overview: {
-          total_users: totalUsers,
-          active_users: activeUsers,
-          total_loans: totalLoans,
-          pending_loans: pendingLoans,
-          total_amount: totalAmount,
-          approved_amount: approvedAmount
-        },
+        overview: overview,
         loan_status_distribution: statusDistribution,
         monthly_trends: monthlyTrends,
         bank_distribution: bankDistribution,
@@ -173,17 +173,14 @@ router.get('/user', authenticate, async (req, res, next) => {
       return acc;
     }, {});
     
-    // 总申请金额和已批准金额
+    // 总申请金额
     const totalAmount = userLoans.reduce((sum, loan) => sum + loan.amount, 0);
-    const approvedAmount = userLoans
-      .filter(loan => loan.status === 'approved')
-      .reduce((sum, loan) => sum + (loan.approved_amount || loan.amount), 0);
     
     // 最近的贷款申请
     const recentLoans = await Loan.find({ applicant_id: userId })
       .sort({ created_at: -1 })
       .limit(5)
-      .select('loan_name amount status application_date approval_date');
+      .select('loan_name amount status application_date');
     
     // 月度申请趋势 (最近6个月)
     const monthlyApplications = await Loan.aggregate([
@@ -229,11 +226,21 @@ router.get('/user', authenticate, async (req, res, next) => {
       }
     ]);
     
-    // 待办事项
-    const pendingLoans = await Loan.find({ 
+    // 待办事项 - 显示活跃贷款的下期还款提醒
+    const activeLoans = await Loan.find({ 
       applicant_id: userId, 
-      status: 'pending' 
-    }).select('loan_name amount application_date');
+      status: 'active' 
+    }).select('loan_name amount application_date next_payment_date');
+    
+    const pendingItems = activeLoans
+      .filter(loan => loan.next_payment_date && loan.next_payment_date <= new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)) // 7天内到期
+      .map(loan => ({
+        id: loan._id,
+        type: 'payment_due',
+        title: `还款提醒：${loan.loan_name}`,
+        description: `下期还款日期：${loan.next_payment_date?.toLocaleDateString()}`,
+        date: loan.next_payment_date
+      }));
     
     res.json({
       success: true,
@@ -241,28 +248,17 @@ router.get('/user', authenticate, async (req, res, next) => {
       data: {
         overview: {
           total_loans: totalLoans,
-          pending_loans: statusStats.pending || 0,
-          approved_loans: statusStats.approved || 0,
-          rejected_loans: statusStats.rejected || 0,
+          active_loans: statusStats.active || 0,
           completed_loans: statusStats.completed || 0,
-          total_amount: totalAmount,
-          approved_amount: approvedAmount
+          total_amount: totalAmount
         },
         status_distribution: {
-          pending: statusStats.pending || 0,
-          approved: statusStats.approved || 0,
-          rejected: statusStats.rejected || 0,
+          active: statusStats.active || 0,
           completed: statusStats.completed || 0
         },
         recent_loans: recentLoans,
         monthly_applications: monthlyApplications,
-        pending_items: pendingLoans.map(loan => ({
-          id: loan._id,
-          type: 'loan_pending',
-          title: `贷款申请：${loan.loan_name}`,
-          description: `申请金额：${loan.amount.toLocaleString()}元`,
-          date: loan.application_date
-        }))
+        pending_items: pendingItems
       },
       code: 200,
       timestamp: new Date().toISOString()

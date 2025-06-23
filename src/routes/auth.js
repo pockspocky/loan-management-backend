@@ -13,17 +13,13 @@ const router = express.Router();
 // 用户注册
 router.post('/register', async (req, res, next) => {
   try {
-    const { username, email, password, real_name, phone, id_card } = req.body;
+    const { username, password } = req.body;
     
     // 验证必填字段
-    const requiredFields = { username, email, password, real_name, phone, id_card };
+    const requiredFields = { username, password };
     const validation = validateInput(requiredFields, {
       username: { required: true, minLength: 3, maxLength: 20 },
-      email: { required: true, email: true },
-      password: { required: true, minLength: 6 },
-      real_name: { required: true, minLength: 2 },
-      phone: { required: true, pattern: /^1[3-9]\d{9}$/ },
-      id_card: { required: true, pattern: /^[1-9]\d{5}(18|19|20)\d{2}((0[1-9])|(1[0-2]))(([0-2][1-9])|10|20|30|31)\d{3}[0-9Xx]$/ }
+      password: { required: true, minLength: 6 }
     });
     
     if (!validation.isValid) {
@@ -37,25 +33,12 @@ router.post('/register', async (req, res, next) => {
     }
     
     // 检查用户名是否已存在
-    const existingUser = await User.findOne({
-      $or: [
-        { username },
-        { email },
-        { phone },
-        { id_card }
-      ]
-    });
+    const existingUser = await User.findOne({ username });
     
     if (existingUser) {
-      let message = '注册失败';
-      if (existingUser.username === username) message = '用户名已存在';
-      else if (existingUser.email === email) message = '邮箱已被注册';
-      else if (existingUser.phone === phone) message = '手机号已被注册';
-      else if (existingUser.id_card === id_card) message = '身份证号已被注册';
-      
       return res.status(409).json({
         success: false,
-        message,
+        message: '用户名已存在',
         code: 409,
         timestamp: new Date().toISOString()
       });
@@ -64,11 +47,7 @@ router.post('/register', async (req, res, next) => {
     // 创建新用户
     const user = new User({
       username,
-      email,
       password,
-      real_name,
-      phone,
-      id_card,
       role: 'user',
       status: 'active'
     });
@@ -121,14 +100,8 @@ router.post('/login', async (req, res, next) => {
       });
     }
     
-    // 查找用户（支持用户名、邮箱、手机号登录）
-    const user = await User.findOne({
-      $or: [
-        { username },
-        { email: username },
-        { phone: username }
-      ]
-    }).select('+password');
+    // 查找用户（仅支持用户名登录）
+    const user = await User.findOne({ username }).select('+password');
     
     if (!user) {
       // 记录登录失败日志

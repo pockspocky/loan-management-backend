@@ -51,33 +51,12 @@ const userRegistrationSchema = Joi.object({
       'string.max': '用户名最多20个字符',
       'any.required': '用户名是必填的'
     }),
-  email: Joi.string()
-    .email()
-    .required()
-    .messages({
-      'string.email': '请输入有效的邮箱地址',
-      'any.required': '邮箱是必填的'
-    }),
   password: Joi.string()
     .min(6)
     .required()
     .messages({
       'string.min': '密码至少6个字符',
       'any.required': '密码是必填的'
-    }),
-  confirm_password: Joi.string()
-    .valid(Joi.ref('password'))
-    .required()
-    .messages({
-      'any.only': '确认密码必须与密码一致',
-      'any.required': '确认密码是必填的'
-    }),
-  real_name: Joi.string().trim().max(50).optional(),
-  phone: Joi.string()
-    .pattern(/^1[3-9]\d{9}$/)
-    .optional()
-    .messages({
-      'string.pattern.base': '请输入有效的手机号码'
     }),
   role: Joi.string().valid('admin', 'user').default('user')
 });
@@ -184,32 +163,10 @@ const loanUpdateSchema = Joi.object({
   attachments: Joi.array().items(Joi.string()).optional()
 });
 
-// 贷款审批验证模式
-const loanApprovalSchema = Joi.object({
-  status: Joi.string()
-    .valid('approved', 'rejected')
-    .required()
-    .messages({
-      'any.only': '审批状态必须是approved或rejected',
-      'any.required': '审批状态是必填的'
-    }),
-  remark: Joi.string().trim().max(1000).optional(),
-  approved_amount: Joi.number().min(0).when('status', {
-    is: 'approved',
-    then: Joi.optional(),
-    otherwise: Joi.forbidden()
-  }),
-  approved_rate: Joi.number().min(0).max(100).when('status', {
-    is: 'approved',
-    then: Joi.optional(),
-    otherwise: Joi.forbidden()
-  })
-});
-
 // 查询参数验证模式
 const loanQuerySchema = paginationSchema.keys({
   status: Joi.string()
-    .valid('pending', 'approved', 'rejected', 'completed')
+    .valid('active', 'completed')
     .optional(),
   applicant_id: Joi.string().optional(),
   bank: Joi.string().optional(),
@@ -373,7 +330,6 @@ module.exports = {
   passwordChangeSchema,
   loanCreateSchema,
   loanUpdateSchema,
-  loanApprovalSchema,
   loanQuerySchema,
   userQuerySchema,
   logQuerySchema,

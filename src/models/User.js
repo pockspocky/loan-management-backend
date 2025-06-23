@@ -13,11 +13,12 @@ const userSchema = new mongoose.Schema({
   },
   email: {
     type: String,
-    required: [true, '邮箱是必填的'],
     unique: true,
+    sparse: true,
     lowercase: true,
     trim: true,
-    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, '请输入有效的邮箱地址']
+    match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, '请输入有效的邮箱地址'],
+    default: null
   },
   password: {
     type: String,
@@ -28,12 +29,14 @@ const userSchema = new mongoose.Schema({
   real_name: {
     type: String,
     trim: true,
-    maxlength: [50, '真实姓名最多50个字符']
+    maxlength: [50, '真实姓名最多50个字符'],
+    default: null
   },
   phone: {
     type: String,
     trim: true,
-    match: [/^1[3-9]\d{9}$/, '请输入有效的手机号码']
+    match: [/^1[3-9]\d{9}$/, '请输入有效的手机号码'],
+    default: null
   },
   role: {
     type: String,

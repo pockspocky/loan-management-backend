@@ -51,10 +51,10 @@ const loanSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: {
-      values: ['pending', 'approved', 'rejected', 'completed'],
-      message: '状态必须是pending、approved、rejected或completed'
+      values: ['active', 'completed'],
+      message: '状态必须是active或completed'
     },
-    default: 'pending'
+    default: 'active'
   },
   purpose: {
     type: String,
@@ -65,22 +65,6 @@ const loanSchema = new mongoose.Schema({
     type: String,
     trim: true,
     maxlength: [500, '抵押物描述最多500个字符']
-  },
-  approved_amount: {
-    type: Number,
-    min: [0, '批准金额不能为负数'],
-    default: null
-  },
-  approved_rate: {
-    type: Number,
-    min: [0, '批准利率不能为负数'],
-    max: [100, '批准利率不能超过100%'],
-    default: null
-  },
-  remark: {
-    type: String,
-    trim: true,
-    maxlength: [1000, '备注最多1000个字符']
   },
   attachments: [{
     file_id: {
@@ -115,15 +99,6 @@ const loanSchema = new mongoose.Schema({
   application_date: {
     type: Date,
     default: Date.now
-  },
-  approval_date: {
-    type: Date,
-    default: null
-  },
-  approved_by: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
   },
   monthly_payment: {
     type: Number,
@@ -215,8 +190,8 @@ loanSchema.virtual('remaining_amount').get(function() {
 
 // 计算月供的方法
 loanSchema.methods.calculateMonthlyPayment = function() {
-  const principal = this.approved_amount || this.amount;
-  const rate = (this.approved_rate || this.interest_rate) / 100 / 12; // 月利率
+  const principal = this.amount; // 直接使用申请金额
+  const rate = this.interest_rate / 100 / 12; // 月利率
   const term = this.term;
 
   if (this.repayment_method === 'equal_payment') {
@@ -236,8 +211,8 @@ loanSchema.methods.calculateMonthlyPayment = function() {
 
 // 计算总还款额的方法
 loanSchema.methods.calculateTotalPayment = function() {
-  const principal = this.approved_amount || this.amount;
-  const rate = (this.approved_rate || this.interest_rate) / 100 / 12;
+  const principal = this.amount; // 直接使用申请金额
+  const rate = this.interest_rate / 100 / 12;
   const term = this.term;
 
   if (this.repayment_method === 'equal_payment') {
@@ -259,8 +234,8 @@ loanSchema.methods.generateRepaymentSchedule = async function() {
   
   const RepaymentSchedule = require('./RepaymentSchedule');
   
-  const principal = this.approved_amount || this.amount;
-  const annualRate = (this.approved_rate || this.interest_rate) / 100;
+  const principal = this.amount;
+  const annualRate = this.interest_rate / 100;
   const months = this.term;
   
   let calculationResult;
@@ -338,10 +313,11 @@ loanSchema.methods.updatePaymentStatus = async function() {
 
 // 保存前计算相关字段
 loanSchema.pre('save', function(next) {
-  if (this.status === 'approved' && (this.isModified('approved_amount') || this.isModified('approved_rate') || this.isModified('term'))) {
+  // 自动计算还款相关字段
+  if (this.isModified('amount') || this.isModified('interest_rate') || this.isModified('term')) {
     this.monthly_payment = this.calculateMonthlyPayment();
     this.total_payment = this.calculateTotalPayment();
-    this.total_interest = this.total_payment - (this.approved_amount || this.amount);
+    this.total_interest = this.total_payment - this.amount;
   }
   next();
 });
@@ -361,12 +337,9 @@ loanSchema.statics.getStatistics = async function() {
 
   const result = {
     total_loans: 0,
-    pending_loans: 0,
-    approved_loans: 0,
-    rejected_loans: 0,
+    active_loans: 0,
     completed_loans: 0,
     total_amount: 0,
-    approved_amount: 0,
     average_amount: 0
   };
 
@@ -375,15 +348,8 @@ loanSchema.statics.getStatistics = async function() {
     result.total_amount += stat.totalAmount;
     
     switch (stat._id) {
-      case 'pending':
-        result.pending_loans = stat.count;
-        break;
-      case 'approved':
-        result.approved_loans = stat.count;
-        result.approved_amount += stat.totalAmount;
-        break;
-      case 'rejected':
-        result.rejected_loans = stat.count;
+      case 'active':
+        result.active_loans = stat.count;
         break;
       case 'completed':
         result.completed_loans = stat.count;
