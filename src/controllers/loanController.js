@@ -176,6 +176,16 @@ exports.recordPayment = async (req, res, next) => {
       });
     }
 
+    // 权限检查：管理员可以操作所有贷款，普通用户只能操作自己的贷款
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: '您只能操作自己的贷款',
+        code: 403,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // 验证还款期数是否存在
     const schedule = await RepaymentSchedule.findOne({
       loan_id: loanId,
@@ -249,6 +259,28 @@ exports.recordPayment = async (req, res, next) => {
 exports.modifySchedulePeriod = async (req, res, next) => {
   try {
     const { loanId, periodNumber } = req.params;
+    
+    // 验证贷款是否存在并检查权限
+    const loan = await Loan.findById(loanId);
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: '贷款不存在',
+        code: 404,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // 权限检查：管理员可以操作所有贷款，普通用户只能操作自己的贷款
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: '您只能操作自己的贷款',
+        code: 403,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
     const updateData = {
       ...req.body,
       updated_at: new Date(),
@@ -298,6 +330,27 @@ exports.batchModifySchedule = async (req, res, next) => {
         success: false,
         message: '无效的批量修改数据',
         code: 400,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // 验证贷款是否存在并检查权限
+    const loan = await Loan.findById(loanId);
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: '贷款不存在',
+        code: 404,
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // 权限检查：管理员可以操作所有贷款，普通用户只能操作自己的贷款
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: '您只能操作自己的贷款',
+        code: 403,
         timestamp: new Date().toISOString()
       });
     }

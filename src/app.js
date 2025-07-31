@@ -19,6 +19,7 @@ const loanRoutes = require('./routes/loans');
 const uploadRoutes = require('./routes/upload');
 const logRoutes = require('./routes/logs');
 const dashboardRoutes = require('./routes/dashboard');
+const taskRoutes = require('./routes/tasks');
 
 const app = express();
 
@@ -140,6 +141,7 @@ app.use(`/api/${apiVersion}/loans`, loanRoutes);
 app.use(`/api/${apiVersion}/upload`, uploadRoutes);
 app.use(`/api/${apiVersion}/logs`, logRoutes);
 app.use(`/api/${apiVersion}/dashboard`, dashboardRoutes);
+app.use(`/api/${apiVersion}/tasks`, taskRoutes);
 
 // 健康检查端点
 app.get('/health', (req, res) => {
@@ -171,6 +173,7 @@ app.get('/', (req, res) => {
         auth: `/api/${apiVersion}/auth`,
         users: `/api/${apiVersion}/users`,
         loans: `/api/${apiVersion}/loans`,
+        tasks: `/api/${apiVersion}/tasks`,
         logs: `/api/${apiVersion}/logs`,
         health: '/health'
       }

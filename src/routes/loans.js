@@ -138,6 +138,105 @@ router.get('/', authenticate, validate(loanQuerySchema, 'query'), async (req, re
   }
 });
 
+// 贷款计算API - 在动态路由之前定义
+router.post('/calculate', authenticate, async (req, res, next) => {
+  try {
+    const { amount, interest_rate, term, method } = req.body;
+    
+    // 验证输入参数
+    if (!amount || !interest_rate || !term || !method) {
+      return res.status(400).json({
+        success: false,
+        message: '缺少必要参数: amount, interest_rate, term, method',
+        code: 400,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (amount < 1000 || amount > 100000000) {
+      return res.status(400).json({
+        success: false,
+        message: '贷款金额必须在1000-100000000之间',
+        code: 400,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (interest_rate < 0 || interest_rate > 100) {
+      return res.status(400).json({
+        success: false,
+        message: '利率必须在0-100之间',
+        code: 400,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (term < 1 || term > 360) {
+      return res.status(400).json({
+        success: false,
+        message: '贷款期限必须在1-360个月之间',
+        code: 400,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    if (!['equal_payment', 'equal_principal'].includes(method)) {
+      return res.status(400).json({
+        success: false,
+        message: '还款方式必须是equal_payment或equal_principal',
+        code: 400,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    let calculationResult;
+    
+    if (method === 'equal_payment') {
+      // 等额本息
+      calculationResult = calculateEqualInstallment(amount, interest_rate, term);
+    } else {
+      // 等额本金
+      calculationResult = calculateEqualPrincipal(amount, interest_rate, term);
+    }
+    
+    // 记录计算日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'loan',
+      action: 'calculate_loan',
+      message: `贷款计算: ${method}`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        amount,
+        interest_rate,
+        term,
+        method
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '贷款计算成功',
+      data: {
+        monthly_payment: calculationResult.monthlyPayment,
+        total_payment: calculationResult.totalPayment,
+        total_interest: calculationResult.totalInterest,
+        method: method
+      },
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // 获取贷款统计信息 (仅管理员) - 移到动态路由之前
 router.get('/statistics', authenticate, authorize('admin'), async (req, res, next) => {
   try {
@@ -853,7 +952,7 @@ router.get('/:loan_id/repayment-schedule', authenticate, async (req, res, next) 
 });
 
 // 简化的记录还款路由 (前端兼容)
-router.post('/:loan_id/payments', authenticate, authorize('admin'), async (req, res, next) => {
+router.post('/:loan_id/payments', authenticate, async (req, res, next) => {
   try {
     const { loan_id } = req.params;
     const { 
@@ -873,6 +972,11 @@ router.post('/:loan_id/payments', authenticate, authorize('admin'), async (req, 
     const loan = await Loan.findById(loan_id);
     if (!loan) {
       return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    // 权限检查：管理员可以操作所有贷款，普通用户只能操作自己的贷款
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return next(new AppError('您只能操作自己的贷款', 403, 1003));
     }
     
     const schedule = await RepaymentSchedule.findOne({
@@ -979,9 +1083,9 @@ router.post('/:loan_id/repayment-schedule/:period_number/payment', authenticate,
       return next(new AppError('贷款不存在', 404, 4040));
     }
     
-    // 权限检查（只有管理员可以记录还款）
-    if (req.user.role !== 'admin') {
-      return next(new AppError('只有管理员可以记录还款', 403, 1003));
+    // 权限检查：管理员可以记录所有贷款的还款，普通用户只能记录自己的贷款
+    if (req.user.role !== 'admin' && loan.user_id.toString() !== req.user._id.toString()) {
+      return next(new AppError('您只能操作自己的贷款', 403, 1003));
     }
     
     const schedule = await RepaymentSchedule.findOne({
@@ -1245,7 +1349,7 @@ router.post('/:loan_id/generate-schedule', authenticate, async (req, res, next) 
 });
 
 // 批量修改还款计划（必须在单期修改之前）
-router.put('/:loan_id/repayment-schedule/batch', authenticate, authorize('admin'), async (req, res, next) => {
+router.put('/:loan_id/repayment-schedule/batch', authenticate, async (req, res, next) => {
   try {
     const { loan_id } = req.params;
     const { schedules } = req.body;
@@ -1257,6 +1361,11 @@ router.put('/:loan_id/repayment-schedule/batch', authenticate, authorize('admin'
     const loan = await Loan.findById(loan_id);
     if (!loan) {
       return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    // 权限检查：管理员可以操作所有贷款，普通用户只能操作自己的贷款
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return next(new AppError('您只能操作自己的贷款', 403, 1003));
     }
     
     const results = [];
@@ -1405,7 +1514,7 @@ router.put('/:loan_id/repayment-schedule/batch', authenticate, authorize('admin'
 });
 
 // 修改还款计划
-router.put('/:loan_id/repayment-schedule/:period_number', authenticate, authorize('admin'), async (req, res, next) => {
+router.put('/:loan_id/repayment-schedule/:period_number', authenticate, async (req, res, next) => {
   try {
     const { loan_id, period_number } = req.params;
     const { 
@@ -1420,6 +1529,11 @@ router.put('/:loan_id/repayment-schedule/:period_number', authenticate, authoriz
     const loan = await Loan.findById(loan_id);
     if (!loan) {
       return next(new AppError('贷款不存在', 404, 4040));
+    }
+    
+    // 权限检查：管理员可以操作所有贷款，普通用户只能操作自己的贷款
+    if (req.user.role !== 'admin' && loan.applicant_id.toString() !== req.user._id.toString()) {
+      return next(new AppError('您只能操作自己的贷款', 403, 1003));
     }
     
     const schedule = await RepaymentSchedule.findOne({
@@ -1558,9 +1672,9 @@ router.put('/:loan_id/repayment-schedule/:period_number', authenticate, authoriz
 router.get('/:loanId/repayment-schedule', authenticate, loanController.getRepaymentSchedule);
 router.get('/:loanId/payment-stats', authenticate, loanController.getPaymentStats);
 
-// 还款记录和修改（管理员权限）
-router.post('/:loanId/payments', authenticate, authorize('admin'), loanController.recordPayment);
-router.put('/:loanId/repayment-schedule/:periodNumber', authenticate, authorize('admin'), loanController.modifySchedulePeriod);
-router.put('/:loanId/repayment-schedule/batch', authenticate, authorize('admin'), loanController.batchModifySchedule);
+// 还款记录和修改（已移除管理员限制，添加资源所有权检查）
+router.post('/:loanId/payments', authenticate, loanController.recordPayment);
+router.put('/:loanId/repayment-schedule/:periodNumber', authenticate, loanController.modifySchedulePeriod);
+router.put('/:loanId/repayment-schedule/batch', authenticate, loanController.batchModifySchedule);
 
 module.exports = router; 

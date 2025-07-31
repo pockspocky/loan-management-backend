@@ -112,6 +112,120 @@ router.get('/', authenticate, authorize('admin'), validate(userQuerySchema, 'que
   }
 });
 
+// 获取当前用户资料 - 必须在 /:user_id 路由之前定义
+router.get('/profile', authenticate, async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId).select('-password -refresh_tokens');
+    
+    if (!user) {
+      return next(new AppError('用户不存在', 404, 4040));
+    }
+    
+    // 记录查看日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'user',
+      action: 'view_profile',
+      message: `查看个人资料: ${user.username}`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: {
+        viewed_user_id: user._id,
+        viewed_username: user.username
+      }
+    });
+    
+    res.json({
+      success: true,
+      message: '获取用户资料成功',
+      data: { user },
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 获取用户统计信息 - 在动态路由之前定义
+router.get('/stats', authenticate, async (req, res, next) => {
+  try {
+    const userId = req.user._id;
+    
+    // 导入 Loan 模型
+    const Loan = require('../models/Loan');
+    
+    // 统计用户的贷款数据
+    const loanStats = await Loan.aggregate([
+      { $match: { applicant_id: userId } },
+      {
+        $group: {
+          _id: null,
+          totalLoans: { $sum: 1 },
+          activeLoans: {
+            $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] }
+          },
+          completedLoans: {
+            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
+          },
+          totalAmount: { $sum: '$amount' },
+          avgInterestRate: { $avg: '$interest_rate' }
+        }
+      }
+    ]);
+    
+    // 如果没有贷款数据，返回默认值
+    const stats = loanStats[0] || {
+      totalLoans: 0,
+      activeLoans: 0,
+      completedLoans: 0,
+      totalAmount: 0,
+      avgInterestRate: 0
+    };
+    
+    // 构建响应数据（匹配前端期望的格式）
+    const responseData = {
+      totalTasks: stats.totalLoans,
+      completedTasks: stats.completedLoans,
+      activeProjects: stats.activeLoans,
+      totalAmount: stats.totalAmount,
+      avgInterestRate: Number(stats.avgInterestRate?.toFixed(2) || 0)
+    };
+    
+    // 记录查看日志
+    await SystemLog.createLog({
+      level: 'info',
+      module: 'user',
+      action: 'view_stats',
+      message: `查看用户统计: ${req.user.username}`,
+      user_id: req.user._id,
+      username: req.user.username,
+      ip_address: req.ip || req.connection.remoteAddress,
+      user_agent: req.get('User-Agent'),
+      request_method: req.method,
+      request_url: req.originalUrl,
+      response_status: 200,
+      metadata: responseData
+    });
+    
+    res.json({
+      success: true,
+      message: '获取用户统计成功',
+      data: responseData,
+      code: 200,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // 获取单个用户信息
 router.get('/:user_id', authenticate, async (req, res, next) => {
   try {
